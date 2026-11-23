@@ -632,7 +632,8 @@ namespace ClaudeAlertaWin
             var p = new StackPanel();
             foreach (var x in ctl.Pendencias.Take(3))
             {
-                var c = Ui.CartaoPedido(x, ctl.Abrir, ctl.EsconderAviso);
+                var pedido = x;
+                var c = Ui.CartaoPedido(x, link => ctl.AbrirPedido(pedido), ctl.EsconderAviso);
                 c.Margin = new Thickness(0, 0, 0, 8);
                 p.Children.Add(c);
             }
@@ -724,7 +725,8 @@ namespace ClaudeAlertaWin
                 p.Children.Add(Rotulo("Precisa de você", ctl.Pendencias.Count));
                 foreach (var x in ctl.Pendencias.Take(4))
                 {
-                    var c = Ui.CartaoPedido(x, ctl.Abrir, null);
+                    var pedido = x;
+                    var c = Ui.CartaoPedido(x, link => ctl.AbrirPedido(pedido), null);
                     c.Margin = new Thickness(0, 0, 0, 8);
                     p.Children.Add(c);
                 }
@@ -856,10 +858,22 @@ namespace ClaudeAlertaWin
             }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
+        // Pedido só aparece depois de `atraso` segundos (config.json "atraso", padrão 6): a sessão abre o alerta
+        // logo antes de escrever a pergunta, e o aviso não pode chegar antes da mensagem. Resolvido antes disso, nem aparece.
+        List<Pendencia> todas = new List<Pendencia>();
+        static double Atraso()
+        {
+            double v;
+            return double.TryParse(Dados.Config("atraso"), NumberStyles.Float, CultureInfo.InvariantCulture, out v) ? v : 6;
+        }
+
         void LerPendencias()
         {
             DateTime? m = File.Exists(Dados.ArqPendencias) ? File.GetLastWriteTimeUtc(Dados.ArqPendencias) : (DateTime?)null;
-            if (!primeira && m == mtime)
+            if (primeira || m != mtime) { mtime = m; todas = Dados.LerPendencias(); }
+            double agora = Dados.Agora(), espera = Atraso();
+            var visiveis = todas.Where(p => agora - p.Criado >= espera).ToList();
+            if (!primeira && visiveis.Select(p => p.Id).SequenceEqual(Pendencias.Select(p => p.Id)))
             {
                 // lembrete a cada 3 min enquanto houver pedido e o Claude não estiver na frente
                 if (Pendencias.Count > 0 && (DateTime.Now - ultimoSom).TotalSeconds > 180)
@@ -870,8 +884,7 @@ namespace ClaudeAlertaWin
                 AtualizarAviso();
                 return;
             }
-            mtime = m;
-            Pendencias = Dados.LerPendencias();
+            Pendencias = visiveis;
             if (Pendencias.Count == 0) avisoEscondido = false;
             if (!primeira && Pendencias.Any(p => !vistos.Contains(p.Id)))
             {
@@ -880,7 +893,7 @@ namespace ClaudeAlertaWin
                 if (!W.ClaudeNaFrente()) Som();
                 ultimoSom = DateTime.Now;
             }
-            vistos = new HashSet<string>(Pendencias.Select(p => p.Id));
+            foreach (var p in Pendencias) vistos.Add(p.Id);
             primeira = false;
             Redesenhar();
             AtualizarAviso();
@@ -1027,6 +1040,23 @@ namespace ClaudeAlertaWin
                 if (aviso && Pendencias.Count > 0) { painel.Desenhar(); PosicionarPainel(); painel.Revelar(); }
                 else painel.Hide();
             });
+        }
+
+        // "Abrir conversa" resolve o pedido: some da tela na hora e sai do arquivo pelo próprio `alerta fechar`
+        public void AbrirPedido(Pendencia p)
+        {
+            Pendencias.RemoveAll(x => x.Id == p.Id);
+            todas.RemoveAll(x => x.Id == p.Id);
+            vistos.Add(p.Id);
+            try
+            {
+                var exe = IOPath.Combine(Dados.Pasta, "bin", "alerta.exe");
+                Process.Start(new ProcessStartInfo(exe, "fechar " + p.Id) { UseShellExecute = false, CreateNoWindow = true });
+            }
+            catch { }
+            Redesenhar();
+            AtualizarAviso();
+            Abrir(p.Link);
         }
 
         public void Abrir(string link)

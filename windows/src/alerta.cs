@@ -350,7 +350,8 @@ namespace ClaudeAlertaCli
                 else if (args[i] == "--link") link = args[++i];
             }
             if (tipo != "chave" && tipo != "decisao" && tipo != "aprovacao") tipo = "outro";
-            var it = NovoItem(titulo, detalhe, tipo, sessao, link, "manual", "", "");
+            // guarda a sessão que abriu: quando você responder nela, o pedido fecha sozinho
+            var it = NovoItem(titulo, detalhe, tipo, sessao, link, "manual", Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID") ?? "", "");
             Console.WriteLine(Mexer(d => { d.Add(it); return Tuple.Create(d, (string)it["id"]); }));
             return 0;
         }
@@ -395,8 +396,15 @@ namespace ClaudeAlertaCli
                 var item = NovoItem(titulo, det, tipo, pasta, "", "hook", sid, transcript);
                 Mexer(d => { var r = d.Where(p => !doHookDaSessao(p)).ToList(); r.Add(item); return Tuple.Create(r, ""); });
             }
-            else if (nome == "UserPromptSubmit" || nome == "PostToolUse")
+            else if (nome == "UserPromptSubmit" || (nome == "PostToolUse" && (Json.Str(ev, "tool_name") == "AskUserQuestion" || Json.Str(ev, "tool_name") == "ExitPlanMode")))
             {
+                // você respondeu nessa sessão (mensagem, pergunta ou plano): todos os pedidos dela estão resolvidos,
+                // inclusive os abertos à mão com `alerta abrir`
+                if (sid != "") Mexer(d => Tuple.Create(d.Where(p => Json.Str(Json.Obj(p), "sessao_id") != sid).ToList(), ""));
+            }
+            else if (nome == "PostToolUse")
+            {
+                // aprovou uma permissão e a ferramenta rodou: fecha só o pedido automático
                 Mexer(d => Tuple.Create(d.Where(p => !doHookDaSessao(p)).ToList(), ""));
             }
             else if (nome == "SessionEnd")

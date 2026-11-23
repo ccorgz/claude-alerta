@@ -21,10 +21,10 @@ Funciona com o **app Claude Desktop** (aba Code) e com o Claude Code no terminal
 - **Item nativo da barra de menus** (`NSStatusItem`): o macOS coloca o item logo antes dos outros ícones do canto direito, abre espaço para ele (nunca fica por cima de menu de app nem de outro ícone), usa as cores da barra (clara ou escura) e mostra o item em todos os monitores. Dá para mudar a posição arrastando com ⌘ pressionado, e o macOS lembra dela. Num MacBook com muitos ícones, o macOS esconde atrás do notch os que não cabem, como faz com qualquer item.
 - **Fechado**, ocupa só a largura do conteúdo: `✳ 2 ◯ 28% ◯ 55%`, que são as sessões ativas, o anel da sessão de 5h e o anel da semana. Com pedido aberto, aparece `● 1` em argila ao lado do ✳. Passe o mouse em cada parte para ver o que é e quando renova.
 - **Só o ícone:** botão direito no bloco, depois *Mostrar só o ícone*. Fica só o ✳, como o ícone nativo do Claude, com um ponto argila quando há pedido. A escolha fica salva em `~/.claude-alerta/config.json` (`{"barra": "icone"}` ou `{"barra": "completa"}`).
-- **Aviso de pedido**: todo pedido novo aparece sozinho no canto superior direito da tela, logo abaixo da barra, num cartão com borda e faixa argila (até 3 cartões; o resto vira "+ N pedidos"). Se você está em outro app, o aviso fica até o pedido ser resolvido ou você clicar em **✕**, que esconde até o próximo pedido. Se o Claude está na frente, ele sobe sozinho depois de 8 segundos.
+- **Aviso de pedido**: todo pedido novo aparece sozinho no canto superior direito da tela, logo abaixo da barra, num cartão com borda e faixa argila (até 3 cartões; o resto vira "+ N pedidos"). Se você está em outro app, o aviso fica até o pedido ser resolvido ou você clicar em **✕**, que esconde até o próximo pedido. Se o Claude está na frente, ele sobe sozinho depois de 8 segundos. Todo pedido espera **6 segundos** antes de aparecer (aviso, som e contador), para não chegar antes da mensagem do Claude na conversa; resolvido nesse meio-tempo, nem aparece. O tempo é ajustável em `~/.claude-alerta/config.json` (`{"atraso": 6}`, em segundos).
 - **Aberta (clique)**, mostra:
   - **Uso**: sessão (5h), semana e os limites semanais por modelo (por exemplo, "Semana · Fable"), com barra, porcentagem e "renova em…". Os limites por modelo aparecem só no painel aberto. A cor fica verde abaixo de 60%, argila até 85% e vermelha acima disso.
-  - **Precisa de você**: cada pedido com tipo, projeto e há quanto tempo espera. **Abrir conversa** leva direto à conversa no app do Claude.
+  - **Precisa de você**: cada pedido com tipo, projeto e há quanto tempo espera. **Abrir conversa** leva direto à conversa no app do Claude e já dá o pedido por resolvido: ele some na hora.
   - **Sessões ativas**: as que estão trabalhando, esperando você ou com tarefa em segundo plano (comando ou monitor rodando depois do fim do turno), com nome, pasta e estado. Sessão parada sai da lista, mesmo com o processo ainda aberto. Clicar numa sessão abre a conversa dela. O nome é o título que o app Desktop mostra na barra lateral. Threads de projeto aparecem com o tópico da thread e o nome do projeto embaixo, e o clique abre o projeto com a thread ao lado (`claude://claude.ai/code/project/chan_…?thread=cmsg_…`). O projeto e a thread vêm da mensagem de abertura da própria conversa (`~/.claude/projects/*/<sessão>.jsonl`).
 - **O painel desce de cima para baixo, logo abaixo do item**, e sobe de volta para ele ao fechar. O aviso sai do canto superior direito.
 - **Hover e cursor de mão** em tudo que é clicável, mesmo com o app inativo (ele nunca fica na frente).
@@ -110,7 +110,7 @@ sessão do Claude Code (Desktop ou terminal)
 
 | Comando | O que faz |
 |---|---|
-| `alerta abrir "título" [--detalhe "..."] [--tipo chave\|decisao\|aprovacao\|outro] [--sessao nome] [--link url]` | Abre um pedido e imprime o id |
+| `alerta abrir "título" [--detalhe "..."] [--tipo chave\|decisao\|aprovacao\|outro] [--sessao nome] [--link url]` | Abre um pedido e imprime o id. Rodado de dentro de uma sessão, guarda qual é ela: quando você responder lá, o pedido fecha sozinho |
 | `alerta fechar <id>` | Fecha um pedido |
 | `alerta limpar-sessao <nome>` | Fecha todos os pedidos de uma sessão |
 | `alerta listar` | Lista os pedidos abertos |
@@ -125,8 +125,9 @@ Os pedidos abertos dentro de uma sessão da aba Code do app ganham sozinhos o li
 |---|---|
 | `Notification` (pede permissão ou espera resposta) | abre um pedido automático da sessão (um por sessão) |
 | `PreToolUse` de `AskUserQuestion` ou `ExitPlanMode` | abre o pedido na hora |
-| `UserPromptSubmit` (você respondeu) | fecha o pedido automático da sessão |
-| `PostToolUse` (você aprovou e a ferramenta rodou) | fecha o pedido automático da sessão |
+| `UserPromptSubmit` (você respondeu na sessão) | fecha **todos** os pedidos da sessão, inclusive os abertos à mão com `alerta abrir` |
+| `PostToolUse` de `AskUserQuestion` ou `ExitPlanMode` (você respondeu a pergunta ou o plano) | fecha **todos** os pedidos da sessão |
+| `PostToolUse` das outras ferramentas (você aprovou e ela rodou) | fecha só o pedido automático da sessão |
 | `SessionEnd` | fecha todos os pedidos da sessão |
 | todos acima | disparam a leitura do uso, no máximo a cada 2 min |
 

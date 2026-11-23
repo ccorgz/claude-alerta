@@ -80,7 +80,7 @@
   <tr>
     <td width="33%" valign="top">
       <h3>🔔 Pedidos</h3>
-      Permissão, pergunta, plano para aprovar, chave, decisão. O aviso aparece sozinho; com o Claude na frente, some em 8 s; fora dele, fica com som até você resolver.
+      Permissão, pergunta, plano para aprovar, chave, decisão. O aviso aparece sozinho, 6 s depois do pedido, para nunca chegar antes da mensagem do Claude, e some quando você clica em <b>Abrir conversa</b> ou responde na própria sessão.
     </td>
     <td width="33%" valign="top">
       <h3>📊 Uso do plano</h3>

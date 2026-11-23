@@ -11,7 +11,9 @@ Uso manual (pela sessão):
   alerta uso         -> lê o uso do plano (sessão de 5h e semana) e grava em ~/.claude-alerta/uso.json
 
 Uso pelos hooks do Claude Code (lê o JSON do evento na entrada padrão):
-  alerta hook    -> Notification e PreToolUse(AskUserQuestion/ExitPlanMode) abrem; UserPromptSubmit, PostToolUse e SessionEnd fecham
+  alerta hook    -> Notification e PreToolUse(AskUserQuestion/ExitPlanMode) abrem; resposta sua na sessão
+                    (UserPromptSubmit, ou PostToolUse de AskUserQuestion/ExitPlanMode) fecha todos os pedidos dela,
+                    inclusive os manuais; PostToolUse comum fecha só o automático; SessionEnd fecha todos
 """
 import fcntl, json, os, re, shutil, subprocess, sys, time, uuid, argparse
 
@@ -236,7 +238,13 @@ def hook():
             det, titulo, tipo = "Plano pronto esperando sua aprovação", "Claude quer aprovar um plano", "aprovacao"
         item = novo_item(titulo, det, tipo, pasta, origem="hook", sessao_id=sid, transcript=ev.get("transcript_path", ""))
         mexer(lambda d: ([p for p in d if not (p.get("origem") == "hook" and p.get("sessao_id") == sid)] + [item], None))
-    elif nome in ("UserPromptSubmit", "PostToolUse"):
+    elif nome == "UserPromptSubmit" or (nome == "PostToolUse" and ev.get("tool_name") in ("AskUserQuestion", "ExitPlanMode")):
+        # você respondeu nessa sessão (mensagem, pergunta ou plano): todos os pedidos dela estão resolvidos,
+        # inclusive os abertos à mão com `alerta abrir`
+        if sid:
+            mexer(lambda d: ([p for p in d if p.get("sessao_id") != sid], None))
+    elif nome == "PostToolUse":
+        # aprovou uma permissão e a ferramenta rodou: fecha só o pedido automático (os manuais esperam sua resposta)
         mexer(lambda d: ([p for p in d if not (p.get("origem") == "hook" and p.get("sessao_id") == sid)], None))
     elif nome == "SessionEnd":
         mexer(lambda d: ([p for p in d if p.get("sessao_id") != sid], None))
@@ -259,7 +267,8 @@ def main():
     l = sub.add_parser("limpar-sessao"); l.add_argument("sessao")
     x = ap.parse_args()
     if x.cmd == "abrir":
-        it = novo_item(x.titulo, x.detalhe, x.tipo, x.sessao, x.link)
+        # guarda a sessão que abriu: quando você responder nela, o pedido fecha sozinho
+        it = novo_item(x.titulo, x.detalhe, x.tipo, x.sessao, x.link, sessao_id=os.environ.get("CLAUDE_CODE_SESSION_ID", ""))
         print(mexer(lambda d: (d + [it], it["id"])))
     elif x.cmd == "fechar":
         def fz(d):

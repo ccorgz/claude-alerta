@@ -255,6 +255,7 @@ final class Estado: ObservableObject {
     @Published var soIcone = false          // barra fechada mostra só o ✳ (opção do botão direito)   // onde o bloco fechado começa, dentro da janela
     var alturaBarra: CGFloat = 37
     var abrir: (String) -> Void = { _ in }
+    var abrirPedido: (Pendencia) -> Void = { _ in }   // abre a conversa e dá o pedido por resolvido
     var alternar: () -> Void = {}
     var esconderAviso: () -> Void = {}
 
@@ -457,7 +458,7 @@ struct Painel: View {
 
             if !e.pendencias.isEmpty {
                 rotulo("Precisa de você", e.pendencias.count)
-                VStack(spacing: 8) { ForEach(e.pendencias.prefix(4)) { p in CartaoPedido(p: p, abrir: e.abrir) } }
+                VStack(spacing: 8) { ForEach(e.pendencias.prefix(4)) { p in CartaoPedido(p: p, abrir: { _ in e.abrirPedido(p) }) } }
             }
 
             rotulo("Sessões ativas", e.ativas.count)
@@ -525,7 +526,7 @@ struct Ilha: View {
                 if e.aberto { Painel(e: e) }
                 else if e.aviso && !e.pendencias.isEmpty {
                     VStack(spacing: 8) {
-                        ForEach(e.pendencias.prefix(3)) { p in CartaoPedido(p: p, abrir: e.abrir, fechar: e.esconderAviso) }
+                        ForEach(e.pendencias.prefix(3)) { p in CartaoPedido(p: p, abrir: { _ in e.abrirPedido(p) }, fechar: e.esconderAviso) }
                         if e.pendencias.count > 3 {
                             Text("+ \(e.pendencias.count - 3) pedidos").font(.system(size: 11.5)).foregroundColor(C.tx2)
                                 .padding(.horizontal, 10).padding(.vertical, 4).background(Capsule().fill(C.fundo))
@@ -586,6 +587,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         e.abrir = { [weak self] l in self?.abrirLink(l) }
+        e.abrirPedido = { [weak self] p in self?.resolver(p); self?.abrirLink(p.link ?? "") }
         e.alternar = { [weak self] in self?.alternar() }
         e.esconderAviso = { [weak self] in self?.avisoEscondido = true; self?.atualizarAviso() }
 
@@ -720,10 +722,21 @@ final class App: NSObject, NSApplicationDelegate {
         if mostrar { e.aviso = true; descer() } else { subir { self.e.aviso = false } }
     }
 
+    // Pedido só aparece depois de `atraso` segundos (config.json "atraso", padrão 6): a sessão abre o alerta
+    // logo antes de escrever a pergunta, e o aviso não pode chegar antes da mensagem. Resolvido antes disso, nem aparece.
+    var todas: [Pendencia] = []
+    var atraso: Double {
+        let v = lerConfig()["atraso"]
+        return (v as? Double) ?? (v as? Int).map(Double.init) ?? 6
+    }
+
     func lerArquivos() {
         defer { atualizarAviso() }
         let m = (try? FileManager.default.attributesOfItem(atPath: arqPendencias))?[.modificationDate] as? Date
-        if !primeira && m == mtime {
+        if primeira || m != mtime { mtime = m; todas = lerPendencias() }
+        let agora = Date().timeIntervalSince1970, espera = atraso
+        let visiveis = todas.filter { agora - $0.criado >= espera }
+        if !primeira && visiveis.map({ $0.id }) == e.pendencias.map({ $0.id }) {
             // lembrete a cada 3 min enquanto houver pedido e o Claude não estiver na frente
             if !e.pendencias.isEmpty && Date().timeIntervalSince(ultimoSom) > 180 {
                 ultimoSom = Date()
@@ -731,8 +744,7 @@ final class App: NSObject, NSApplicationDelegate {
             }
             return
         }
-        mtime = m
-        e.pendencias = lerPendencias()
+        e.pendencias = visiveis
         if e.pendencias.isEmpty { avisoEscondido = false }
         if !primeira && e.pendencias.contains(where: { !vistos.contains($0.id) }) {
             avisoEscondido = false
@@ -740,7 +752,7 @@ final class App: NSObject, NSApplicationDelegate {
             if !claudeNaFrente() { NSSound(named: "Sosumi")?.play() }
             ultimoSom = Date(); pulsarAte = Date().addingTimeInterval(4)
         }
-        vistos = Set(e.pendencias.map { $0.id })
+        vistos.formUnion(e.pendencias.map { $0.id })
         primeira = false
         ajustarAltura()
     }
@@ -757,6 +769,20 @@ final class App: NSObject, NSApplicationDelegate {
                 self.ajustarAltura()
             }
         }
+    }
+
+    // "Abrir conversa" resolve o pedido: some da tela na hora e sai do arquivo pelo próprio `alerta fechar`
+    func resolver(_ p: Pendencia) {
+        e.pendencias.removeAll { $0.id == p.id }
+        todas.removeAll { $0.id == p.id }
+        vistos.insert(p.id)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: (pastaAlerta as NSString).appendingPathComponent("bin/alerta"))
+        proc.arguments = ["fechar", p.id]
+        proc.standardOutput = FileHandle.nullDevice; proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+        atualizarAviso()
+        ajustarAltura()
     }
 
     func abrirLink(_ l: String) {

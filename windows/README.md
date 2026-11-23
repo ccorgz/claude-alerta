@@ -27,10 +27,10 @@ Funciona com o **app Claude Desktop** (aba Code) e com o Claude Code no terminal
 - **Bloco na barra de tarefas.** Transparente sobre a barra, com as cores do tema dela (clara ou escura). Fechado, mostra `✳ ●1 2 ◯32% ◯56%`: pedidos (só quando há), sessões ativas, e os anéis da sessão de 5h e da semana. Passe o mouse em cada parte para ver o que é e quando renova. Some sozinho quando um app está em tela cheia.
 - **Painel (clique no bloco):** sobe do bloco e traz:
   - **Uso**: sessão (5h), semana e os limites semanais por modelo (por exemplo, "Semana · Fable"), com barra, porcentagem e "renova em…". A cor fica verde abaixo de 60%, argila até 85% e vermelha acima disso.
-  - **Precisa de você**: cada pedido com tipo, projeto e há quanto tempo espera. **Abrir conversa** leva direto à conversa no app do Claude.
+  - **Precisa de você**: cada pedido com tipo, projeto e há quanto tempo espera. **Abrir conversa** leva direto à conversa no app do Claude e já dá o pedido por resolvido: ele some na hora.
   - **Sessões ativas**: nome, pasta e estado (trabalhando, esperando você, em segundo plano). Clicar numa sessão abre a conversa dela. Threads de projeto aparecem com o tópico e o nome do projeto, e abrem o projeto com a thread ao lado.
 - **Clicar fora** fecha o painel. **Botão direito** no bloco ou no ícone: *Mostrar só o ícone*, abrir o arquivo de pedidos, atualizar o uso agora, sair.
-- **Aviso de pedido**: todo pedido novo aparece sozinho no canto inferior direito, acima da barra de tarefas (onde o Windows mostra as notificações), num cartão com borda e faixa argila. Se você está em outro app, toca um som e o aviso fica até o pedido ser resolvido ou você clicar em **✕**. Se o Claude está na frente, ele recolhe sozinho depois de 8 segundos. Com o pedido ainda aberto, o som se repete a cada 3 minutos.
+- **Aviso de pedido**: todo pedido novo aparece sozinho no canto inferior direito, acima da barra de tarefas (onde o Windows mostra as notificações), num cartão com borda e faixa argila. Se você está em outro app, toca um som e o aviso fica até o pedido ser resolvido ou você clicar em **✕**. Se o Claude está na frente, ele recolhe sozinho depois de 8 segundos. Com o pedido ainda aberto, o som se repete a cada 3 minutos. Todo pedido espera **6 segundos** antes de aparecer (aviso, som e contador), para não chegar antes da mensagem do Claude na conversa; resolvido nesse meio-tempo, nem aparece. O tempo é ajustável em `%USERPROFILE%\.claude-alerta\config.json` (`{"atraso": 6}`, em segundos).
 - **Só o ícone**: o bloco sai da barra e o ✳ vai para a bandeja do sistema, com um ponto argila quando há pedido. O clique abre o mesmo painel, e passar o mouse mostra o uso. A escolha fica salva em `%USERPROFILE%\.claude-alerta\config.json` (`{"barra": "icone"}` ou `{"barra": "completa"}`). Com a barra de tarefas na vertical, o app usa sempre o ícone da bandeja.
 - **Automático**: hooks globais do Claude Code abrem os pedidos (permissão, pergunta, plano para aprovar, espera por resposta) e fecham quando você responde ou aprova.
 
@@ -98,7 +98,7 @@ O `alerta.exe` acha o `claude.exe` pelo processo da própria sessão (`CLAUDE_PI
 
 | Comando | O que faz |
 |---|---|
-| `alerta abrir "título" [--detalhe "..."] [--tipo chave\|decisao\|aprovacao\|outro] [--sessao nome] [--link url]` | Abre um pedido e imprime o id |
+| `alerta abrir "título" [--detalhe "..."] [--tipo chave\|decisao\|aprovacao\|outro] [--sessao nome] [--link url]` | Abre um pedido e imprime o id. Rodado de dentro de uma sessão, guarda qual é ela: quando você responder lá, o pedido fecha sozinho |
 | `alerta fechar <id>` | Fecha um pedido |
 | `alerta limpar-sessao <nome>` | Fecha todos os pedidos de uma sessão |
 | `alerta listar` | Lista os pedidos abertos |
@@ -114,8 +114,9 @@ Os pedidos abertos dentro de uma sessão da aba Code ganham sozinhos o link da c
 |---|---|
 | `Notification` (pede permissão ou espera resposta) | abre um pedido automático da sessão (um por sessão) |
 | `PreToolUse` de `AskUserQuestion` ou `ExitPlanMode` | abre o pedido na hora |
-| `UserPromptSubmit` (você respondeu) | fecha o pedido automático da sessão |
-| `PostToolUse` (você aprovou e a ferramenta rodou) | fecha o pedido automático da sessão |
+| `UserPromptSubmit` (você respondeu na sessão) | fecha **todos** os pedidos da sessão, inclusive os abertos à mão com `alerta abrir` |
+| `PostToolUse` de `AskUserQuestion` ou `ExitPlanMode` (você respondeu a pergunta ou o plano) | fecha **todos** os pedidos da sessão |
+| `PostToolUse` das outras ferramentas (você aprovou e ela rodou) | fecha só o pedido automático da sessão |
 | `SessionEnd` | fecha todos os pedidos da sessão |
 | todos acima | disparam a leitura do uso, no máximo a cada 2 min |
 

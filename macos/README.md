@@ -142,8 +142,7 @@ claude-alerta/macos/
 ├── desinstalar.sh           remove tudo (app, login, hooks, pedidos e uso salvo)
 ├── bin/alerta               comando (Python 3, sem dependências)
 ├── src/ClaudeAlerta.swift   app (Swift/SwiftUI, arquivo único, sem dependências)
-├── docs/exemplo.png
-├── dist/claude-alerta-macos.zip   pacote para mandar para outra pessoa
+└── docs/                    prints do app (barra, painel, aviso)
 ```
 
 Arquivos criados na máquina:

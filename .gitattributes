@@ -1,0 +1,2 @@
+# os .cmd só chamam o instalador em PowerShell; não contam nas linguagens do repositório
+*.cmd linguist-detectable=false

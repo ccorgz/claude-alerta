@@ -70,7 +70,7 @@
 </table>
 
 > [!NOTE]
-> Os prints do macOS são do app rodando. Os do Windows são simulações do Windows 11 ([`windows/docs/simulacao.html`](windows/docs/simulacao.html)) com o mesmo visual e o mesmo layout do app. O código Windows compila sem erros como C# 5 para o .NET Framework 4.8, que é o mesmo compilador que o instalador usa, mas ainda não rodou numa máquina Windows.
+> Os prints do macOS são do app rodando. Os do Windows são simulações do Windows 11, com o mesmo visual e o mesmo layout do app. O código Windows compila sem erros como C# 5 para o .NET Framework 4.8, que é o mesmo compilador que o instalador usa, mas ainda não rodou numa máquina Windows.
 
 ---
 
@@ -134,7 +134,7 @@ Compila o app, coloca para abrir no login, liga os hooks do Claude Code em `~/.c
 
 Não precisa instalar nada antes: usa o compilador C# do .NET Framework 4.8, que já vem no Windows.
 
-1. Copie a pasta `windows` (ou use [`claude-alerta-windows.zip`](windows/dist/claude-alerta-windows.zip)).
+1. Baixe o projeto (botão **Code → Download ZIP** no GitHub) e abra a pasta `windows`.
 2. Dê dois cliques em **`instalar.cmd`**.
 
 Compila o app e o `alerta.exe`, coloca para abrir no login, liga os hooks em `%USERPROFILE%\.claude\settings.json` (com cópia do original) e abre o app. Sem administrador.
@@ -205,8 +205,8 @@ claude-alerta/
 ├── README.md       este arquivo
 ├── LICENSE         MIT
 ├── docs/           banner e diagrama deste README
-├── macos/          versão macOS: instalador, comando, app, prints, zip, guia
-└── windows/        versão Windows: instalador, comando, app, simulações, zip, guia
+├── macos/          versão macOS: instalador, comando, app, prints, guia
+└── windows/        versão Windows: instalador, comando, app, simulações, guia
 ```
 
 ## 🧹 Desinstalar

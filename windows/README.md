@@ -18,7 +18,7 @@ No modo só ícone, o ✳ fica na bandeja do sistema:
 
 ![Só o ícone](docs/icone.png)
 
-As imagens são simulações do Windows 11 (`docs/simulacao.html`). O código compila sem erros como C# 5 para o .NET Framework 4.8, que é exatamente o que o instalador usa, mas ainda não rodou numa máquina Windows. O visual, os arquivos e o comportamento são os mesmos da versão macOS.
+As imagens são simulações do Windows 11. O código compila sem erros como C# 5 para o .NET Framework 4.8, que é exatamente o que o instalador usa, mas ainda não rodou numa máquina Windows. O visual, os arquivos e o comportamento são os mesmos da versão macOS.
 
 Funciona com o **app Claude Desktop** (aba Code) e com o Claude Code no terminal. Não pede senha e não guarda token nenhum.
 
@@ -131,8 +131,7 @@ claude-alerta/windows/
 ├── desinstalar.cmd / .ps1  remove tudo
 ├── src/alerta.cs           comando (C# 5, .NET Framework 4)
 ├── src/ClaudeAlerta.cs     app (C# 5, WPF + Windows Forms, arquivo único)
-├── docs/                   simulações do Windows 11 (painel, aviso, só ícone) e o HTML delas
-└── dist/claude-alerta-windows.zip   pacote para mandar para outra pessoa
+└── docs/                   simulações do Windows 11 (painel, aviso, só ícone)
 ```
 
 Arquivos criados no PC:

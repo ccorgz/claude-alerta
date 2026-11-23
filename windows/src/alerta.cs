@@ -501,7 +501,7 @@ namespace ClaudeAlertaCli
 
         static readonly string[] Meses = { "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec" };
 
-        // "Nov 23 at 2:39pm (America/Sao_Paulo)" ou "2:39pm (...)": o horário vem no fuso do usuário (o local)
+        // "Jan 5 at 3:15pm (Europe/Lisbon)" ou "3:15pm (...)": o horário vem no fuso do usuário (o local)
         static object RenovaDoTexto(string txt)
         {
             var m = Regex.Match(txt ?? "", "(?:([A-Za-z]{3})\\w*\\s+(\\d{1,2})\\s+at\\s+)?(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)");

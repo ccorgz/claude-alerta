@@ -126,7 +126,7 @@ def talvez_atualizar_uso():
 MESES = {m: i + 1 for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
 
 def _renova_do_texto(txt):
-    # "Nov 23 at 2:39pm (America/Sao_Paulo)" ou "2:39pm (America/Sao_Paulo)"
+    # "Jan 5 at 3:15pm (Europe/Lisbon)" ou "3:15pm (Europe/Lisbon)"
     try:
         from datetime import datetime
         from zoneinfo import ZoneInfo

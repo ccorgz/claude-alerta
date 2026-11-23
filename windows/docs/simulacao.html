@@ -1,0 +1,94 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+:root{--bg:#141413;--card:#1f1e1b;--card2:#262521;--line:#2f2d28;--tx:#ece8e1;--tx2:#a39e93;--tx3:#6f6b62;--clay:#d97757;--clay2:#e8a184;--ok:#3ddc84;--track:#33312c}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1920px;height:760px;overflow:hidden;font-family:"Segoe UI Variable Text","Segoe UI",-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased;color:var(--tx);
+background:radial-gradient(900px 600px at 30% 40%,#2b3a67 0%,transparent 60%),radial-gradient(800px 600px at 85% 30%,#1d4f5e 0%,transparent 60%),linear-gradient(160deg,#0f1424,#0a0d18);position:relative}
+.win{position:absolute;left:120px;top:60px;width:1100px;height:560px;background:#202020;border:1px solid #2b2b2b;border-radius:8px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.win .t{height:40px;background:#1b1b1b;display:flex;align-items:center;padding:0 14px;font-size:12px;color:#bbb;gap:10px}
+.win .t .c{margin-left:auto;display:flex;gap:28px;color:#ccc;font-size:13px}
+.win .b{padding:24px;color:#8a8a8a;font-size:13px;line-height:1.8}
+.tb{position:absolute;left:0;right:0;bottom:0;height:48px;background:rgba(28,28,28,.86);backdrop-filter:blur(40px);border-top:1px solid #2e2e2e;display:flex;align-items:center}
+.apps{position:absolute;left:50%;transform:translateX(-50%);display:flex;gap:4px;align-items:center;height:48px}
+.app{width:40px;height:40px;border-radius:4px;display:grid;place-items:center}
+.app.on{background:rgba(255,255,255,.06)}
+.app i{width:24px;height:24px;border-radius:5px;display:block}
+.tray{position:absolute;right:8px;display:flex;align-items:center;height:48px;gap:2px;color:#fff;font-size:12px}
+.ti{height:40px;padding:0 8px;display:flex;align-items:center;gap:10px;border-radius:4px}
+.clock{text-align:right;line-height:1.35;font-size:12px;padding:0 10px}
+.blk{display:flex;align-items:center;gap:9px;height:32px;padding:0 9px;border-radius:5px;font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums;color:#fff;margin-right:6px}
+.blk.hover{background:rgba(255,255,255,.08)}
+.spark{width:14px;height:14px}
+.badge{display:flex;align-items:center;gap:4px;color:var(--clay);background:rgba(217,119,87,.2);border-radius:4px;padding:0 6px;height:18px}
+.badge i{width:6px;height:6px;border-radius:50%;background:var(--clay);display:block}
+.ring{width:13px;height:13px;border-radius:50%;background:conic-gradient(var(--ok) calc(var(--p)*1%),rgba(255,255,255,.2) 0);-webkit-mask:radial-gradient(circle,transparent 4.2px,#000 4.6px)}
+.rg{display:flex;align-items:center;gap:4px}
+.panel{position:absolute;bottom:56px;width:560px;background:var(--bg);border:1px solid #2c2b27;border-radius:10px;padding:18px 22px 16px;box-shadow:0 24px 70px rgba(0,0,0,.55)}
+.hello{display:flex;align-items:baseline;justify-content:space-between;margin:2px 2px 14px}
+.hello h1{font-family:Georgia,"Times New Roman",serif;font-size:21px;font-weight:400}
+.hello span{font-size:11.5px;color:var(--tx3)}
+.usage{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:13px}
+.u{display:grid;grid-template-columns:140px 1fr 44px;align-items:center;gap:12px;font-size:13px}
+.u small{display:block;font-size:11px;color:var(--tx3);margin-top:1px}
+.track{height:7px;border-radius:4px;background:var(--track);overflow:hidden}.track i{display:block;height:100%;border-radius:4px;background:var(--ok)}
+.u .v{text-align:right;font-weight:600}
+.lbl{font-size:12px;color:var(--tx2);margin:16px 2px 8px;display:flex;justify-content:space-between}
+.ask{background:#1c1a18;border:1.2px solid rgba(217,119,87,.85);border-radius:10px;padding:13px 12px 13px 18px;display:flex;align-items:center;gap:12px;box-shadow:inset 4px 0 0 var(--clay)}
+.ask .d{display:none}
+.ask .tx{flex:1}.ask .h{font-size:14px;font-weight:600;color:#fff}.ask .m{font-size:11.5px;color:#c9c3b8;margin-top:4px}
+.tag{font-size:10.5px;font-weight:600;color:#ffc2a8;background:rgba(217,119,87,.32);border-radius:4px;padding:1px 6px;margin-right:6px}
+.btn{background:var(--clay);color:#fff;font-size:12.5px;font-weight:600;border-radius:6px;padding:7px 12px}
+.x{color:var(--tx3);font-size:13px;padding:0 4px}
+.list{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.row{display:flex;align-items:center;gap:11px;padding:10px 14px;font-size:13px}.row+.row{border-top:1px solid var(--line)}
+.st{width:7px;height:7px;border-radius:50%}.row .n{flex:1}.row small{display:block;font-size:11px;color:var(--tx3)}
+.row .w{font-size:11.5px;color:var(--tx2)}
+.foot{text-align:right;font-size:11px;color:var(--tx3);margin:12px 4px 0}
+.cap{position:absolute;font-size:13px;color:#c9c9c9;background:rgba(0,0,0,.55);padding:6px 10px;border-radius:6px}
+.arrow{position:absolute;border:1.5px dashed rgba(217,119,87,.8);border-radius:8px}
+</style></head><body>
+<div class="win"><div class="t">Claude <div class="c"><span>—</span><span>☐</span><span>✕</span></div></div><div class="b">Janela de um app qualquer. A barra de tarefas do Windows 11 fica embaixo; o Claude Alerta mora nela, ao lado da área de notificação.</div></div>
+
+<!-- painel aberto: sobe do bloco -->
+<div class="panel" style="right:150px">
+ <div class="hello"><h1>Bom dia, Carlos</h1><span>atualizado agora</span></div>
+ <div class="usage">
+  <div class="u"><div>Sessão<small>renova em 3h 46min</small></div><div class="track"><i style="width:32%"></i></div><div class="v">32%</div></div>
+  <div class="u"><div>Semana<small>renova ter 14:00</small></div><div class="track"><i style="width:56%"></i></div><div class="v">56%</div></div>
+  <div class="u"><div>Semana · Fable<small>renova ter 14:00</small></div><div class="track"><i style="width:2%"></i></div><div class="v">0%</div></div>
+ </div>
+ <div class="lbl"><span>Precisa de você</span><span>1</span></div>
+ <div class="ask"><span class="d"></span><div class="tx"><div class="h">Aprovar plano do Studio</div><div class="m"><span class="tag">aprovação</span>dulyxAi · há 2 min</div></div><div class="btn">Abrir conversa</div></div>
+ <div class="lbl"><span>Sessões ativas</span><span>2</span></div>
+ <div class="list">
+  <div class="row"><span class="st" style="background:var(--clay)"></span><div class="n">Barra superior sempre visível<small>dulyxAi</small></div><span class="w">esperando você</span></div>
+  <div class="row"><span class="st" style="background:rgba(61,220,132,.55)"></span><div class="n">Pesquisar pesos reutilizados em loop<small>Duly Decisions Model S1</small></div><span class="w">em segundo plano</span></div>
+ </div>
+ <div class="foot">Abrir Claude ↗</div>
+</div>
+
+<div class="tb">
+ <div class="apps">
+  <div class="app"><svg width="22" height="22" viewBox="0 0 24 24"><rect x="2" y="2" width="9.5" height="9.5" fill="#4cc2ff"/><rect x="12.5" y="2" width="9.5" height="9.5" fill="#4cc2ff"/><rect x="2" y="12.5" width="9.5" height="9.5" fill="#4cc2ff"/><rect x="12.5" y="12.5" width="9.5" height="9.5" fill="#4cc2ff"/></svg></div>
+  <div class="app"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg></div>
+  <div class="app"><i style="background:#f3b33d"></i></div>
+  <div class="app on"><i style="background:#d97757"></i></div>
+  <div class="app"><i style="background:#3a7bd5"></i></div>
+  <div class="app"><i style="background:#2bb673"></i></div>
+ </div>
+ <div class="tray">
+  <div class="blk hover">
+   <svg class="spark" viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="2.6" stroke-linecap="round"><path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9 4.9 19.1"/></svg>
+   <span class="badge"><i></i>1</span><span>2</span>
+   <span class="rg"><span class="ring" style="--p:32"></span>32%</span>
+   <span class="rg"><span class="ring" style="--p:56"></span>56%</span>
+  </div>
+  <div class="ti" style="font-size:11px">⌃</div>
+  <div class="ti"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M2 9a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16a5 5 0 0 1 6 0"/></svg><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 9a4 4 0 0 1 0 6"/></svg><svg width="20" height="16" viewBox="0 0 28 16"><rect x="1" y="2" width="22" height="12" rx="3" fill="none" stroke="#fff" stroke-width="1.5"/><rect x="3" y="4" width="14" height="8" rx="1.5" fill="#fff"/></svg></div>
+  <div class="clock">10:51<br>23/11/2026</div>
+ </div>
+</div>
+<div class="cap" style="right:330px;bottom:640px">Painel aberto: sobe do bloco, por cima da barra de tarefas</div>
+<div class="cap" style="right:330px;bottom:60px;display:none">Bloco na barra de tarefas</div>
+</body></html>

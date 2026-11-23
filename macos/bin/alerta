@@ -1,0 +1,280 @@
+#!/usr/bin/python3
+"""Claude Alerta: pendências que uma sessão do Claude Code precisa do usuário.
+O app ClaudeAlerta mostra uma janela flutuante quando há pendência e o usuário não está no Claude.
+
+Uso manual (pela sessão):
+  alerta abrir "título curto" [--detalhe "o que fazer"] [--tipo chave|decisao|aprovacao|outro]
+               [--sessao nome] [--link https://...]      -> imprime o id
+  alerta fechar <id>
+  alerta limpar-sessao <nome>
+  alerta listar
+  alerta uso         -> lê o uso do plano (sessão de 5h e semana) e grava em ~/.claude-alerta/uso.json
+
+Uso pelos hooks do Claude Code (lê o JSON do evento na entrada padrão):
+  alerta hook    -> Notification e PreToolUse(AskUserQuestion/ExitPlanMode) abrem; UserPromptSubmit, PostToolUse e SessionEnd fecham
+"""
+import fcntl, json, os, re, shutil, subprocess, sys, time, uuid, argparse
+
+PASTA = os.path.expanduser("~/.claude-alerta")
+ARQ = os.path.join(PASTA, "pendencias.json")
+TRAVA = os.path.join(PASTA, ".lock")
+
+def mexer(f):
+    os.makedirs(PASTA, exist_ok=True)
+    with open(TRAVA, "w") as t:
+        fcntl.flock(t, fcntl.LOCK_EX)
+        try:
+            dados = json.load(open(ARQ)) if os.path.exists(ARQ) and os.path.getsize(ARQ) else []
+        except Exception:
+            dados = []
+        novo, saida = f(dados)
+        if novo is not None and novo != dados:
+            tmp = ARQ + ".tmp"
+            json.dump(novo, open(tmp, "w"), ensure_ascii=False, indent=1)
+            os.replace(tmp, ARQ)
+        return saida
+
+def app_atual():
+    # bundle do app de onde a sessão roda (Claude, Terminal, iTerm, VS Code...), para o botão "Ver conversa"
+    return os.environ.get("__CFBundleIdentifier", "")
+
+def link_projeto(sid="", transcript=""):
+    # Thread de projeto: a conversa traz <project id="chan_..."> e <thread ts="cmsg_..."> logo no começo.
+    # O link do projeto com ?thread= abre o projeto com a thread ao lado (continue?session= abriria a thread sozinha).
+    caminhos = [transcript] if transcript else []
+    if sid:
+        import glob
+        caminhos += glob.glob(os.path.expanduser("~/.claude/projects/*/%s.jsonl" % sid))
+    for c in caminhos:
+        try:
+            with open(c, "rb") as f:
+                linhas = [f.readline().decode("utf-8", "ignore") for _ in range(80)]
+        except OSError:
+            continue
+        # só vale a mensagem de abertura da thread (<wake ...><project id=...>), não uma menção qualquer
+        for l in linhas:
+            if "<wake reason=" not in l:
+                continue
+            p = re.search(r'<project id=\\*"(chan_[A-Za-z0-9_]{6,120})', l)
+            if p:
+                th = re.search(r'<thread ts=\\*"(cmsg_[A-Za-z0-9_]{6,120})', l)
+                return "claude://claude.ai/code/project/" + p.group(1) + ("?thread=" + th.group(1) if th else "")
+        return ""
+    return ""
+
+def link_da_sessao(sid="", transcript=""):
+    # Link direto para a conversa no app do Claude (aba Code).
+    # Thread de projeto: abre o projeto com a thread ao lado. Senão: continue?session=local_..., que acha a
+    # sessão pelo id local (needs-input só acha sessões marcadas como "esperando você" e abre conversa nova).
+    sid = sid or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    lp = link_projeto(sid, transcript)
+    if lp:
+        return lp
+    host = os.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
+    if host.startswith("local_"):
+        return "claude://code/continue?session=" + host
+    return ""
+
+def novo_item(titulo, detalhe="", tipo="outro", sessao="", link="", origem="manual", sessao_id="", transcript=""):
+    return dict(id=uuid.uuid4().hex[:8], titulo=titulo, detalhe=detalhe, tipo=tipo, sessao=sessao,
+                sessao_id=sessao_id, link=link or link_da_sessao(sessao_id, transcript), app=app_atual(), origem=origem, criado=time.time())
+
+# ---- Uso do plano (5h e semana) para a barra ----
+# Quem busca é o próprio Claude Code: `claude -p /usage` não chama o modelo (custo zero) e, dentro de uma
+# sessão do app Desktop, usa a autenticação que o app entrega à sessão. Nada de senha, Keychain ou token.
+# Os hooks disparam a busca em segundo plano, no máximo uma vez a cada USO_INTERVALO segundos.
+ARQ_USO = os.path.join(PASTA, "uso.json")
+ARQ_USO_TENTATIVA = os.path.join(PASTA, ".uso-tentativa")
+USO_INTERVALO = 120
+
+def executavel_claude():
+    # 1) caminho que a sessão informa; 2) o executável do próprio processo da sessão (os hooks recebem
+    # CLAUDE_PID, mas não CLAUDE_CODE_EXECPATH); 3) `claude` no PATH; 4) o Claude Code que vem no app Desktop
+    exe = os.environ.get("CLAUDE_CODE_EXECPATH", "")
+    if exe and os.access(exe, os.X_OK):
+        return exe
+    pid = os.environ.get("CLAUDE_PID", "")
+    if pid.isdigit():
+        try:
+            c = subprocess.run(["/bin/ps", "-o", "comm=", "-p", pid], capture_output=True, text=True, timeout=2).stdout.strip()
+            if c and os.path.isabs(c) and os.access(c, os.X_OK) and os.path.basename(c) == "claude":
+                return c
+        except Exception:
+            pass
+    w = shutil.which("claude")
+    if w:
+        return w
+    import glob
+    achados = glob.glob(os.path.expanduser("~/Library/Application Support/Claude/claude-code/*/*/claude.app/Contents/MacOS/claude"))
+    return max(achados, key=os.path.getmtime) if achados else ""
+
+def talvez_atualizar_uso():
+    if os.environ.get("ALERTA_USO_FILHO") or not executavel_claude():
+        return
+    try:
+        if time.time() - os.path.getmtime(ARQ_USO_TENTATIVA) < USO_INTERVALO:
+            return
+    except OSError:
+        pass
+    os.makedirs(PASTA, exist_ok=True)
+    open(ARQ_USO_TENTATIVA, "w").close()
+    env = dict(os.environ, ALERTA_USO_FILHO="1")
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "uso"], env=env, cwd=PASTA,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, close_fds=True)
+
+MESES = {m: i + 1 for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+
+def _renova_do_texto(txt):
+    # "Nov 23 at 2:39pm (America/Sao_Paulo)" ou "2:39pm (America/Sao_Paulo)"
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        m = re.search(r"(?:([A-Za-z]{3})\w*\s+(\d{1,2})\s+at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)", txt)
+        if not m:
+            return None
+        mes, dia, h, mi, ap, tz = m.groups()
+        z = ZoneInfo(tz)
+        agora = datetime.now(z)
+        h = int(h) % 12 + (12 if ap == "pm" else 0)
+        d = agora.replace(month=MESES.get((mes or "").lower(), agora.month), day=int(dia or agora.day),
+                          hour=h, minute=int(mi or 0), second=0, microsecond=0)
+        if d < agora and mes and d.month < agora.month:
+            d = d.replace(year=d.year + 1)
+        return d.timestamp()
+    except Exception:
+        return None
+
+def _janela_do_texto(rotulo, txt):
+    m = re.search(re.escape(rotulo) + r":\s*(\d+(?:\.\d+)?)%\s*used(?:\s*·\s*resets\s*([^\n]+))?", txt)
+    if not m:
+        return None
+    return {"pct": float(m.group(1)), "renova": _renova_do_texto(m.group(2) or "")}
+
+def _iso_para_epoch(s):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+def atualizar_uso():
+    exe = executavel_claude()
+    if not exe:
+        print("Claude Code não encontrado"); return 1
+    inicio = time.time()
+    env = dict(os.environ, ALERTA_USO_FILHO="1")
+    r = subprocess.run([exe, "-p", "/usage", "--no-session-persistence", "--output-format", "json"],
+                       capture_output=True, text=True, timeout=90, env=env, cwd=PASTA)
+    try:
+        txt = json.loads(r.stdout).get("result", "")
+    except Exception:
+        print("resposta inesperada do Claude Code"); return 1
+    sessao = _janela_do_texto("Current session", txt)
+    semana = _janela_do_texto("Current week (all models)", txt)
+    # o Claude Code também guarda os números estruturados em ~/.claude.json; quando são desta leitura, valem mais
+    try:
+        c = json.load(open(os.path.expanduser("~/.claude.json"))).get("cachedUsageUtilization") or {}
+        if c.get("fetchedAtMs", 0) / 1000 >= inicio - 5:
+            u = c.get("utilization") or {}
+            for chave, nome in (("five_hour", "sessao"), ("seven_day", "semana")):
+                j = u.get(chave) or {}
+                if isinstance(j.get("utilization"), (int, float)):
+                    v = {"pct": float(j["utilization"]), "renova": _iso_para_epoch(j.get("resets_at") or "")}
+                    if nome == "sessao": sessao = v
+                    else: semana = v
+    except Exception:
+        pass
+    if not sessao and not semana:
+        print("uso não disponível nesta conta"); return 1
+    # limites semanais por modelo ("Current week (Fable): 0% used · resets ..."), só para o painel aberto
+    modelos = []
+    for m in re.finditer(r"Current week \(([^)]+)\):\s*(\d+(?:\.\d+)?)%\s*used(?:\s*·\s*resets\s*([^\n]+))?", txt):
+        if m.group(1).strip().lower() == "all models":
+            continue
+        modelos.append({"nome": m.group(1).strip(), "pct": float(m.group(2)), "renova": _renova_do_texto(m.group(3) or "")})
+    out = {"sessao": sessao, "semana": semana, "modelos": modelos, "lido": time.time()}
+    tmp = ARQ_USO + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(out, f)
+    os.replace(tmp, ARQ_USO)
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+def hook():
+    try:
+        ev = json.load(sys.stdin)
+    except Exception:
+        return
+    try:
+        talvez_atualizar_uso()
+    except Exception:
+        pass
+    nome = ev.get("hook_event_name", "")
+    sid = ev.get("session_id", "")
+    pasta = os.path.basename(ev.get("cwd", "") or "") or "Claude Code"
+    if nome == "Notification":
+        msg = ev.get("message", "") or ""
+        tipo_n = ev.get("notification_type", "")
+        if tipo_n == "permission_prompt" or "permission" in msg.lower():
+            titulo, tipo = "Claude pede sua permissão", "aprovacao"
+        elif tipo_n == "idle_prompt" or "waiting" in msg.lower():
+            titulo, tipo = "Claude está esperando sua resposta", "outro"
+        else:
+            titulo, tipo = "Claude precisa de você", "outro"
+        item = novo_item(titulo, msg, tipo, pasta, origem="hook", sessao_id=sid, transcript=ev.get("transcript_path", ""))
+        # uma pendência automática por sessão: substitui a anterior
+        mexer(lambda d: ([p for p in d if not (p.get("origem") == "hook" and p.get("sessao_id") == sid)] + [item], None))
+    elif nome == "PreToolUse" and ev.get("tool_name") in ("AskUserQuestion", "ExitPlanMode"):
+        # pergunta ou plano esperando aprovação: avisa já, sem esperar o Notification
+        ti = ev.get("tool_input") or {}
+        if ev.get("tool_name") == "AskUserQuestion":
+            qs = ti.get("questions") or []
+            det = (qs[0].get("question") if qs and isinstance(qs[0], dict) else "") or ""
+            titulo, tipo = "Claude tem uma pergunta para você", "decisao"
+        else:
+            det, titulo, tipo = "Plano pronto esperando sua aprovação", "Claude quer aprovar um plano", "aprovacao"
+        item = novo_item(titulo, det, tipo, pasta, origem="hook", sessao_id=sid, transcript=ev.get("transcript_path", ""))
+        mexer(lambda d: ([p for p in d if not (p.get("origem") == "hook" and p.get("sessao_id") == sid)] + [item], None))
+    elif nome in ("UserPromptSubmit", "PostToolUse"):
+        mexer(lambda d: ([p for p in d if not (p.get("origem") == "hook" and p.get("sessao_id") == sid)], None))
+    elif nome == "SessionEnd":
+        mexer(lambda d: ([p for p in d if p.get("sessao_id") != sid], None))
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "uso":
+        sys.exit(atualizar_uso())
+    if len(sys.argv) > 1 and sys.argv[1] == "hook":
+        try:
+            hook()
+        finally:
+            sys.exit(0)  # nunca atrapalhar a sessão
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    a = sub.add_parser("abrir"); a.add_argument("titulo"); a.add_argument("--detalhe", default="")
+    a.add_argument("--tipo", default="outro", choices=["chave", "decisao", "aprovacao", "outro"])
+    a.add_argument("--sessao", default=""); a.add_argument("--link", default="")
+    f = sub.add_parser("fechar"); f.add_argument("id")
+    sub.add_parser("listar")
+    l = sub.add_parser("limpar-sessao"); l.add_argument("sessao")
+    x = ap.parse_args()
+    if x.cmd == "abrir":
+        it = novo_item(x.titulo, x.detalhe, x.tipo, x.sessao, x.link)
+        print(mexer(lambda d: (d + [it], it["id"])))
+    elif x.cmd == "fechar":
+        def fz(d):
+            r = [p for p in d if p["id"] != x.id]
+            return r, ("fechada" if len(r) < len(d) else "id não encontrado")
+        print(mexer(fz))
+    elif x.cmd == "limpar-sessao":
+        def fz(d):
+            r = [p for p in d if p.get("sessao") != x.sessao]
+            return r, f"{len(d) - len(r)} fechada(s)"
+        print(mexer(fz))
+    else:
+        d = mexer(lambda d: (None, d))
+        if not d: print("nenhuma pendência")
+        for p in d:
+            print(f'{p["id"]}  [{p.get("tipo")}] {p["titulo"]}  ({p.get("sessao","")}, {p.get("origem","manual")})')
+
+main()

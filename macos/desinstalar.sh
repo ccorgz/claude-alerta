@@ -2,7 +2,9 @@
 # Remove o Claude Alerta: para o app, tira do login, tira os hooks do ~/.claude/settings.json
 # e apaga ~/.claude-alerta (pendências e uso salvo).
 launchctl bootout "gui/$(id -u)/com.claude-alerta" 2>/dev/null
-rm -f "$HOME/Library/LaunchAgents/com.claude-alerta.plist"
+launchctl bootout "gui/$(id -u)/com.claude-alerta.tela" 2>/dev/null
+pkill -f "$HOME/.claude-alerta/bin/alerta-tela" 2>/dev/null
+rm -f "$HOME/Library/LaunchAgents/com.claude-alerta.plist" "$HOME/Library/LaunchAgents/com.claude-alerta.tela.plist"
 /usr/bin/python3 - <<'PY'
 import json, os
 p = os.path.expanduser("~/.claude/settings.json")

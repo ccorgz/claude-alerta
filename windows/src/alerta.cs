@@ -311,6 +311,90 @@ namespace ClaudeAlertaCli
             return "";
         }
 
+        // (nome, onde) da sessão: thread de projeto → (tópico, projeto); senão → (título da barra lateral do Desktop, "")
+        static Tuple<string, string> QuemE(string sid, string transcript)
+        {
+            var caminhos = new List<string>();
+            if (!string.IsNullOrEmpty(transcript)) caminhos.Add(transcript);
+            if (!string.IsNullOrEmpty(sid))
+            {
+                var base_ = System.IO.Path.Combine(Home, ".claude", "projects");
+                if (Directory.Exists(base_))
+                    foreach (var dir in Directory.GetDirectories(base_))
+                    {
+                        var f = System.IO.Path.Combine(dir, sid + ".jsonl");
+                        if (File.Exists(f)) caminhos.Add(f);
+                    }
+            }
+            if (caminhos.Count > 0)
+            {
+                try
+                {
+                    var linhas = File.ReadLines(caminhos[0], Encoding.UTF8).Take(80).ToList();
+                    if (linhas.Any(l => l.Contains("<wake reason=")))
+                    {
+                        var txt = string.Join("\n", linhas);
+                        var pj = Regex.Match(txt, "Project: \\\\\"([^\"\\\\]{1,120})\\\\\"");
+                        var tp = Regex.Match(txt, "Topic: \\\\\"([^\"\\\\]{1,160})\\\\\"");
+                        if (pj.Success || tp.Success)
+                            return Tuple.Create(tp.Success ? tp.Groups[1].Value : "Thread de projeto", pj.Success ? pj.Groups[1].Value : "");
+                    }
+                }
+                catch { }
+            }
+            var host = Environment.GetEnvironmentVariable("CLAUDE_CODE_HOST_SESSION_ID") ?? "";
+            if (host.StartsWith("local_"))
+            {
+                var raiz = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Claude", "claude-code-sessions");
+                try
+                {
+                    if (Directory.Exists(raiz))
+                        foreach (var f in Directory.GetFiles(raiz, host + ".json", SearchOption.AllDirectories))
+                        {
+                            var t = Json.Str(Json.Obj(Json.LerArquivo(f)), "title").Trim();
+                            if (t != "") return Tuple.Create(t, "");
+                        }
+                }
+                catch { }
+            }
+            return Tuple.Create("", "");
+        }
+
+        // começo da última resposta do Claude na sessão (detalhe do aviso de "terminou")
+        static string UltimaResposta(Dictionary<string, object> ev)
+        {
+            string t = Json.Str(ev, "last_assistant_message");
+            string tr = Json.Str(ev, "transcript_path");
+            if (t == "" && tr != "" && File.Exists(tr))
+            {
+                try
+                {
+                    string tudo;
+                    using (var fs = new FileStream(tr, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        long ini = Math.Max(0, fs.Length - 400000);
+                        fs.Seek(ini, SeekOrigin.Begin);
+                        using (var sr = new StreamReader(fs, Encoding.UTF8)) tudo = sr.ReadToEnd();
+                    }
+                    var linhas = tudo.Split('\n');
+                    for (int i = linhas.Length - 1; i >= 0 && t == ""; i--)
+                    {
+                        Dictionary<string, object> j = null;
+                        try { j = Json.Obj(Json.Ler(linhas[i])); } catch { }
+                        if (j == null || Json.Str(j, "type") != "assistant") continue;
+                        var msg = Json.Obj(j.ContainsKey("message") ? j["message"] : null);
+                        var partes = Json.Lista(msg != null && msg.ContainsKey("content") ? msg["content"] : null)
+                            .Select(c => Json.Obj(c)).Where(c => c != null && Json.Str(c, "type") == "text")
+                            .Select(c => Json.Str(c, "text")).Where(x => x != "");
+                        t = string.Join(" ", partes).Trim();
+                    }
+                }
+                catch { }
+            }
+            t = Regex.Replace(Regex.Replace(t, "\\s+", " "), "[`*_#>\\[\\]]", "").Trim();
+            return t.Length > 160 ? t.Substring(0, 157) + "…" : t;
+        }
+
         static string LinkDaSessao(string sid, string transcript)
         {
             if (string.IsNullOrEmpty(sid)) sid = Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID") ?? "";
@@ -349,7 +433,7 @@ namespace ClaudeAlertaCli
                 else if (args[i] == "--sessao") sessao = args[++i];
                 else if (args[i] == "--link") link = args[++i];
             }
-            if (tipo != "chave" && tipo != "decisao" && tipo != "aprovacao") tipo = "outro";
+            if (tipo != "chave" && tipo != "decisao" && tipo != "aprovacao" && tipo != "pronto") tipo = "outro";
             // guarda a sessão que abriu: quando você responder nela, o pedido fecha sozinho
             var it = NovoItem(titulo, detalhe, tipo, sessao, link, "manual", Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID") ?? "", "");
             Console.WriteLine(Mexer(d => { d.Add(it); return Tuple.Create(d, (string)it["id"]); }));
@@ -380,6 +464,20 @@ namespace ClaudeAlertaCli
                 else if (tn == "idle_prompt" || msg.ToLowerInvariant().Contains("waiting")) { titulo = "Claude está esperando sua resposta"; tipo = "outro"; }
                 else { titulo = "Claude precisa de você"; tipo = "outro"; }
                 var item = NovoItem(titulo, msg, tipo, pasta, "", "hook", sid, transcript);
+                Mexer(d =>
+                {
+                    // "esperando sua resposta" logo depois de terminar: o aviso de "terminou" já diz mais, fica ele
+                    if (tipo == "outro" && d.Any(p => doHookDaSessao(p) && Json.Str(Json.Obj(p), "tipo") == "pronto")) return Tuple.Create(d, "");
+                    var r = d.Where(p => !doHookDaSessao(p)).ToList(); r.Add(item); return Tuple.Create(r, "");
+                });
+            }
+            else if (nome == "Stop")
+            {
+                // terminou de responder: avisa com o nome da conversa/thread, um trecho da resposta e o link certo
+                if (ev.ContainsKey("stop_hook_active") && ev["stop_hook_active"] is bool && (bool)ev["stop_hook_active"]) return;
+                var q = QuemE(sid, transcript);
+                var item = NovoItem("Terminou: " + (q.Item1 != "" ? q.Item1 : pasta), UltimaResposta(ev), "pronto",
+                                    q.Item2 != "" ? q.Item2 : pasta, "", "hook", sid, transcript);
                 Mexer(d => { var r = d.Where(p => !doHookDaSessao(p)).ToList(); r.Add(item); return Tuple.Create(r, ""); });
             }
             else if (nome == "PreToolUse" && (Json.Str(ev, "tool_name") == "AskUserQuestion" || Json.Str(ev, "tool_name") == "ExitPlanMode"))
@@ -398,9 +496,10 @@ namespace ClaudeAlertaCli
             }
             else if (nome == "UserPromptSubmit" || (nome == "PostToolUse" && (Json.Str(ev, "tool_name") == "AskUserQuestion" || Json.Str(ev, "tool_name") == "ExitPlanMode")))
             {
-                // você respondeu nessa sessão (mensagem, pergunta ou plano): todos os pedidos dela estão resolvidos,
-                // inclusive os abertos à mão com `alerta abrir`
-                if (sid != "") Mexer(d => Tuple.Create(d.Where(p => Json.Str(Json.Obj(p), "sessao_id") != sid).ToList(), ""));
+                // você respondeu nessa sessão: fecham os pedidos dela que eram pergunta (automáticos e chave/decisão/aprovação
+                // abertos à mão). Avisos informativos ("outro") ficam até você fechar cada um.
+                if (sid != "") Mexer(d => Tuple.Create(d.Where(p => !(Json.Str(Json.Obj(p), "sessao_id") == sid &&
+                    (Json.Str(Json.Obj(p), "origem") == "hook" || new[] { "chave", "decisao", "aprovacao" }.Contains(Json.Str(Json.Obj(p), "tipo"))))).ToList(), ""));
             }
             else if (nome == "PostToolUse")
             {
@@ -433,7 +532,7 @@ namespace ClaudeAlertaCli
             string exe = System.IO.Path.Combine(Pasta, "bin", "alerta.exe").Replace('\\', '/');
             string cmd = "\"" + exe + "\" hook";
             var hooks = Json.Obj(s.ContainsKey("hooks") ? s["hooks"] : null) ?? new Dictionary<string, object>();
-            foreach (var ev in new[] { "Notification", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd" })
+            foreach (var ev in new[] { "Notification", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd" })
             {
                 var lst = Json.Lista(hooks.ContainsKey(ev) ? hooks[ev] : null);
                 lst = lst.Where(g => !Json.Lista(Json.Obj(g) != null && Json.Obj(g).ContainsKey("hooks") ? Json.Obj(g)["hooks"] : null)

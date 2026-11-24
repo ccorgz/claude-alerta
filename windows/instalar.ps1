@@ -21,7 +21,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Falha ao compilar src\alerta.cs' }
 & $Csc @comum /target:winexe "/out:$Base\app\ClaudeAlerta.novo.exe" `
     "/r:$Wpf\PresentationFramework.dll" "/r:$Wpf\PresentationCore.dll" "/r:$Wpf\WindowsBase.dll" "/r:$Fw\System.Xaml.dll" `
     /r:System.Web.Extensions.dll /r:System.Management.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll `
-    /r:System.DirectoryServices.AccountManagement.dll "$Aqui\src\ClaudeAlerta.cs"
+    /r:System.DirectoryServices.AccountManagement.dll "/r:$Wpf\UIAutomationClient.dll" "/r:$Wpf\UIAutomationTypes.dll" "$Aqui\src\ClaudeAlerta.cs"
 if ($LASTEXITCODE -ne 0) { throw 'Falha ao compilar src\ClaudeAlerta.cs' }
 
 # troca os binários com o app parado

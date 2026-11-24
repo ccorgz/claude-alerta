@@ -5,6 +5,8 @@ import SwiftUI
 // Fechada: pendências, sessões ativas e uso de 5h/semana. Clicando, desce o painel completo.
 // Fontes: ~/.claude-alerta/pendencias.json (comando `alerta` e hooks), ~/.claude/sessions/*.json,
 // e ~/.claude-alerta/uso.json (gravado por `alerta uso`, disparado pelos hooks).
+// NUVEM (não remover): threads/coordenador de projetos do claude.ai rodam na nuvem, sem hooks aqui. Eles gravam
+// ~/.claude-alerta/nuvem/<chave>.json pelo `bin/nuvem`; viram pedidos e "Sessões ativas" (pendenciasNuvem/sessoesNuvem).
 
 // MARK: - Dados
 
@@ -27,6 +29,7 @@ struct Sessao: Identifiable {
     var desde: Double       // segundos
     var link: String = ""   // para onde o clique leva
     var fundo = false       // turno terminou, mas há comando do Claude rodando em segundo plano (tarefa, monitor)
+    var aguardando = false  // thread da nuvem marcada como esperando você
 }
 
 // Sessões com comando em segundo plano: o Bash do Claude Code roda como filho do processo da sessão,
@@ -80,7 +83,7 @@ func infoProjeto(sessionId: String) -> InfoProjeto? {
     return nil
 }
 
-struct Janela { var pct: Double; var renova: Date? }
+struct Janela { var pct: Double; var renova: Date?; var renovou = false }
 struct Uso { var sessao: Janela?; var semana: Janela?; var sonnet: Janela?; var lido: Date
     var modelos: [(nome: String, janela: Janela)] = []   // limites semanais por modelo (ex.: Fable), só no painel
 }
@@ -130,6 +133,123 @@ func lerPendencias() -> [Pendencia] {
     return ((try? JSONDecoder().decode([Pendencia].self, from: d)) ?? []).sorted { $0.criado > $1.criado }
 }
 
+// MARK: - Tela do Claude (~/.claude-alerta/tela.json, gravado por bin/alerta-tela)
+// Threads e coordenador de projetos rodam na nuvem: cartões "Allow Claude to…" não
+// passam por hook nem arquivo no Mac. O leitor bin/alerta-tela (ligado pelo hook, com a permissão do próprio app
+// Claude) lê a janela e grava tela.json. Aqui isso vira pedido, que some quando sai da tela. Este app não pede
+// permissão nenhuma.
+final class LeitorTela {
+    var achados: [Pendencia] = []
+    var presentes = Set<String>()                       // ids vistos na última leitura
+    private var desde: [String: Double] = [:]
+    private var faltas: [String: Int] = [:]
+    private let arquivo = (pastaAlerta as NSString).appendingPathComponent("tela.json")
+
+    private func chave(_ s: String) -> String {
+        var h: UInt64 = 1469598103934665603            // FNV-1a: id igual entre reinícios do app
+        for b in s.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return String(h, radix: 36)
+    }
+
+    func atualizar() {
+        let agora = Date().timeIntervalSince1970
+        var itens: [(id: String, titulo: String, detalhe: String, tipo: String, onde: String)] = []
+        if let data = FileManager.default.contents(atPath: arquivo),
+           let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           agora - ((j["lido"] as? Double) ?? 0) < 20 {            // leitura velha (leitor parado) não vale
+            for c in (j["cartoes"] as? [[String: Any]]) ?? [] {
+                let t = (c["titulo"] as? String) ?? "", d = (c["detalhe"] as? String) ?? "", w = (c["janela"] as? String) ?? "Claude"
+                if !t.isEmpty { itens.append(("tela-" + chave(t + "|" + d), t, d, "aprovacao", w)) }
+            }
+        }
+        var novos: [Pendencia] = []
+        var vistos = Set<String>()
+        for i in itens where !vistos.contains(i.id) {
+            vistos.insert(i.id); faltas[i.id] = 0
+            let t0 = desde[i.id] ?? agora; desde[i.id] = t0
+            novos.append(Pendencia(id: i.id, titulo: i.titulo, detalhe: i.detalhe.isEmpty ? nil : i.detalhe, tipo: i.tipo,
+                                   sessao: i.onde, criado: t0, link: nil, app: nil))
+        }
+        // tolera 1 leitura sem o item (janela redesenhando) antes de tirar o pedido
+        for p in achados where !vistos.contains(p.id) {
+            let f = (faltas[p.id] ?? 0) + 1; faltas[p.id] = f
+            if f <= 1 { novos.append(p) } else { desde[p.id] = nil; faltas[p.id] = nil }
+        }
+        presentes = vistos
+        achados = novos
+    }
+}
+
+// MARK: - Nuvem (~/.claude-alerta/nuvem/<chave>.json, um arquivo por thread, gravado por `bin/nuvem`)
+// {"chave": "cmsg_...", "projeto": "...", "link": "claude://...",
+//  "sessao": {"nome": "...", "estado": "trabalhando|esperando|parada", "desde": epoch, "ate": epoch},
+//  "pedido": {"titulo": "...", "detalhe": "...", "tipo": "decisao", "criado": epoch, "expira": epoch} | null}
+let pastaNuvem = (pastaAlerta as NSString).appendingPathComponent("nuvem")
+
+func lerNuvem() -> [(arquivo: String, j: [String: Any])] {
+    let fm = FileManager.default
+    var r: [(arquivo: String, j: [String: Any])] = []
+    for n in (try? fm.contentsOfDirectory(atPath: pastaNuvem)) ?? [] where n.hasSuffix(".json") {
+        let f = (pastaNuvem as NSString).appendingPathComponent(n)
+        guard let d = fm.contents(atPath: f), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+        r.append((arquivo: f, j: j))
+    }
+    return r
+}
+
+// id muda a cada pedido novo da mesma thread, para tocar o som de novo
+func idNuvem(_ j: [String: Any]) -> String? {
+    guard let p = j["pedido"] as? [String: Any], let c = p["criado"] as? Double else { return nil }
+    return "nuvem-\(j["chave"] as? String ?? "")-\(Int(c))"
+}
+
+func pendenciasNuvem() -> [Pendencia] {
+    let agora = Date().timeIntervalSince1970
+    var r: [Pendencia] = []
+    for item in lerNuvem() {
+        let j = item.j
+        guard let p = j["pedido"] as? [String: Any], let titulo = p["titulo"] as? String, !titulo.isEmpty,
+              let id = idNuvem(j), ((p["expira"] as? Double) ?? Double.infinity) > agora else { continue }
+        let det = (p["detalhe"] as? String) ?? ""
+        r.append(Pendencia(id: id, titulo: titulo, detalhe: det.isEmpty ? nil : det, tipo: p["tipo"] as? String,
+                           sessao: (j["projeto"] as? String) ?? "Nuvem", criado: (p["criado"] as? Double) ?? agora,
+                           link: j["link"] as? String, app: nil))
+    }
+    return r
+}
+
+func sessoesNuvem() -> [Sessao] {
+    let agora = Date().timeIntervalSince1970
+    var r: [Sessao] = []
+    for item in lerNuvem() {
+        let j = item.j
+        // arquivo parado há 2 dias: limpa
+        if let m = (try? FileManager.default.attributesOfItem(atPath: item.arquivo))?[.modificationDate] as? Date,
+           agora - m.timeIntervalSince1970 > 48 * 3600 { try? FileManager.default.removeItem(atPath: item.arquivo); continue }
+        guard let s = j["sessao"] as? [String: Any], let estado = s["estado"] as? String,
+              estado == "trabalhando" || estado == "esperando", ((s["ate"] as? Double) ?? 0) > agora,
+              let chave = j["chave"] as? String else { continue }
+        var se = Sessao(id: chave, nome: (s["nome"] as? String) ?? "Thread da nuvem",
+                        pasta: ((j["projeto"] as? String) ?? "Projeto") + " · nuvem",
+                        ocupada: estado == "trabalhando", desde: (s["desde"] as? Double) ?? agora,
+                        link: (j["link"] as? String) ?? "claude://")
+        se.aguardando = estado == "esperando"
+        r.append(se)
+    }
+    return r
+}
+
+// "Abrir conversa" num pedido da nuvem: tira o pedido do arquivo da thread (a thread segue como esperando até responder)
+func fecharNuvem(_ id: String) {
+    for item in lerNuvem() where idNuvem(item.j) == id {
+        var n = item.j
+        n["pedido"] = NSNull()
+        if let d = try? JSONSerialization.data(withJSONObject: n, options: [.prettyPrinted]) {
+            try? d.write(to: URL(fileURLWithPath: item.arquivo), options: .atomic)
+        }
+    }
+}
+
 func lerSessoes() -> [Sessao] {
     cacheTitulos = [:]
     let comFundo = pidsComFundo()
@@ -166,6 +286,7 @@ func lerSessoes() -> [Sessao] {
                         ocupada: (j["status"] as? String) == "busy", desde: ms / 1000, link: link,
                         fundo: comFundo.contains(pid)))
     }
+    r += sessoesNuvem()
     return r.sorted { ($0.ocupada ? 1 : 0, $0.desde) > ($1.ocupada ? 1 : 0, $1.desde) }
 }
 
@@ -175,11 +296,35 @@ func lerJanela(_ v: Any?) -> Janela? {
     guard let o = v as? [String: Any], let pct = o["pct"] as? Double else { return nil }
     let r = (o["renova"] as? Double).map { Date(timeIntervalSince1970: $0) }
     // janela já renovou e ninguém usou desde então: está zerada
-    if let r = r, r < Date() { return Janela(pct: 0, renova: nil) }
+    if let r = r, r < Date() { return Janela(pct: 0, renova: nil, renovou: true) }
     return Janela(pct: max(0, min(100, pct)), renova: r)
 }
 
+// Sem hook rodando (só threads na nuvem, ou nada aberto), ninguém relia o uso e o número congelava.
+// O próprio app pede uma leitura nova quando a última tem mais de 3 min (no máximo uma a cada 2 min).
+var ultimoPedidoUso = Date.distantPast
+func pedirLeituraUso(_ lido: Date?) {
+    let agora = Date()
+    if let l = lido, agora.timeIntervalSince(l) < 180 { return }
+    if agora.timeIntervalSince(ultimoPedidoUso) < 120 { return }
+    ultimoPedidoUso = agora
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: (pastaAlerta as NSString).appendingPathComponent("bin/alerta"))
+    p.arguments = ["uso"]
+    p.currentDirectoryURL = URL(fileURLWithPath: pastaAlerta)
+    var env = ProcessInfo.processInfo.environment
+    env["ALERTA_USO_FILHO"] = "1"
+    env["PATH"] = (env["PATH"] ?? "/usr/bin:/bin") + ":/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin"
+    p.environment = env
+    p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+    try? p.run()
+}
+
 func buscarUso(_ fim: @escaping (Uso?, String?) -> Void) {
+    let lidoAntes = FileManager.default.contents(atPath: arqUso)
+        .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        .flatMap { $0["lido"] as? Double }.map { Date(timeIntervalSince1970: $0) }
+    pedirLeituraUso(lidoAntes)
     guard let d = FileManager.default.contents(atPath: arqUso),
           let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
         return fim(nil, "O uso aparece quando uma sessão do Claude Code rodar")
@@ -229,7 +374,7 @@ func renova(_ d: Date?) -> String {
 }
 
 func rotuloTipo(_ t: String?) -> String {
-    switch t ?? "" { case "chave": return "chave"; case "decisao": return "decisão"; case "aprovacao": return "aprovação"; default: return "pedido" }
+    switch t ?? "" { case "chave": return "chave"; case "decisao": return "decisão"; case "aprovacao": return "aprovação"; case "pronto": return "pronto"; default: return "pedido" }
 }
 
 func saudacao() -> String {
@@ -257,9 +402,12 @@ final class Estado: ObservableObject {
     var abrir: (String) -> Void = { _ in }
     var abrirPedido: (Pendencia) -> Void = { _ in }   // abre a conversa e dá o pedido por resolvido
     var alternar: () -> Void = {}
-    var esconderAviso: () -> Void = {}
+    // ✕ num cartão do aviso esconde só aquele pedido (continua no painel e no contador)
+    @Published var escondidos = Set<String>()
+    var esconderAviso: (String) -> Void = { _ in }
+    var noAviso: [Pendencia] { pendencias.filter { !escondidos.contains($0.id) } }
 
-    func esperando(_ s: Sessao) -> Bool { pendencias.contains { ($0.link ?? "").contains(s.id) } }
+    func esperando(_ s: Sessao) -> Bool { s.aguardando || pendencias.contains { ($0.link ?? "").contains(s.id) } }
     // ativa = trabalhando agora ou esperando você; sessão que terminou o turno não conta,
     // mesmo com o processo ainda aberto (o app Desktop mantém o processo vivo)
     var ativas: [Sessao] { sessoes.filter { $0.ocupada || $0.fundo || esperando($0) } }
@@ -430,7 +578,7 @@ struct Compacto: View {
                 Anel(pct: j.pct)
                 Text("\(Int(j.pct.rounded()))%").foregroundStyle(.primary)
             } else { Anel(pct: 0); Text("–").foregroundStyle(.tertiary) }
-        }.help(j.map { "\(dica): \(Int($0.pct.rounded()))% · \(renova($0.renova))" } ?? dica)
+        }.help(j.map { "\(dica): \(Int($0.pct.rounded()))% · \($0.renovou ? "renovou" : renova($0.renova))" } ?? dica)
     }
 }
 
@@ -493,7 +641,9 @@ struct Painel: View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(t).font(.system(size: 13)).foregroundColor(C.tx)
-                Text(renova(j?.renova)).font(.system(size: 11)).foregroundColor(C.tx3)
+                // renovou e ainda não houve leitura nova: a janela de 5h só começa a contar no próximo uso
+                Text(j?.renovou == true ? "renovou · conta no próximo uso" : renova(j?.renova))
+                    .font(.system(size: 11)).foregroundColor(C.tx3)
             }.frame(width: 140, alignment: .leading)
             GeometryReader { g in Barrinha(pct: j?.pct ?? 0, largura: g.size.width, altura: 7) }.frame(height: 7)
             Text(j.map { "\(Int($0.pct.rounded()))%" } ?? "–").font(.system(size: 13, weight: .medium)).monospacedDigit()
@@ -524,11 +674,11 @@ struct Ilha: View {
         VStack(spacing: 0) {
             Group {
                 if e.aberto { Painel(e: e) }
-                else if e.aviso && !e.pendencias.isEmpty {
+                else if e.aviso && !e.noAviso.isEmpty {
                     VStack(spacing: 8) {
-                        ForEach(e.pendencias.prefix(3)) { p in CartaoPedido(p: p, abrir: { _ in e.abrirPedido(p) }, fechar: e.esconderAviso) }
-                        if e.pendencias.count > 3 {
-                            Text("+ \(e.pendencias.count - 3) pedidos").font(.system(size: 11.5)).foregroundColor(C.tx2)
+                        ForEach(e.noAviso.prefix(3)) { p in CartaoPedido(p: p, abrir: { _ in e.abrirPedido(p) }, fechar: { e.esconderAviso(p.id) }) }
+                        if e.noAviso.count > 3 {
+                            Text("+ \(e.noAviso.count - 3) pedidos").font(.system(size: 11.5)).foregroundColor(C.tx2)
                                 .padding(.horizontal, 10).padding(.vertical, 4).background(Capsule().fill(C.fundo))
                         }
                     }
@@ -575,7 +725,6 @@ final class App: NSObject, NSApplicationDelegate {
     var hospedeiro: Hospedeiro<Ilha>!
     var item: NSStatusItem!            // o bloco: item nativo da barra, logo antes dos outros ícones
     var conteudoItem: ConteudoItem!
-    var avisoEscondido = false
     var avisoAte = Date.distantPast   // pedido novo desce sempre; com o Claude na frente, sobe sozinho depois disso
     var mtime: Date? = nil
     var vistos = Set<String>()
@@ -589,7 +738,7 @@ final class App: NSObject, NSApplicationDelegate {
         e.abrir = { [weak self] l in self?.abrirLink(l) }
         e.abrirPedido = { [weak self] p in self?.resolver(p); self?.abrirLink(p.link ?? "") }
         e.alternar = { [weak self] in self?.alternar() }
-        e.esconderAviso = { [weak self] in self?.avisoEscondido = true; self?.atualizarAviso() }
+        e.esconderAviso = { [weak self] id in self?.e.escondidos.insert(id); self?.atualizarAviso(); self?.ajustarAltura() }
 
         janela = JanelaIlha(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         janela.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 2)
@@ -664,7 +813,7 @@ final class App: NSObject, NSApplicationDelegate {
         // largura do item = a do conteúdo (muda com pedidos, números e o modo só ícone)
         let wc = ceil(conteudoItem.fittingSize.width)
         if abs(item.length - wc) > 0.5 { item.length = wc }
-        let desce = e.aberto || (e.aviso && !e.pendencias.isEmpty)
+        let desce = e.aberto || (e.aviso && !e.noAviso.isEmpty)
         guard desce else { janela.orderOut(nil); return }
         // painel e aviso descem logo abaixo do item, centralizados nele (sem sair da tela)
         let t = tela.frame
@@ -716,7 +865,7 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     func atualizarAviso() {
-        let mostrar = !e.pendencias.isEmpty && !avisoEscondido && (!claudeNaFrente() || Date() < avisoAte)
+        let mostrar = !e.noAviso.isEmpty && (!claudeNaFrente() || Date() < avisoAte)
         guard mostrar != e.aviso else { return }
         if e.aberto { e.aviso = mostrar; return }       // painel aberto já mostra os pedidos
         if mostrar { e.aviso = true; descer() } else { subir { self.e.aviso = false } }
@@ -725,6 +874,10 @@ final class App: NSObject, NSApplicationDelegate {
     // Pedido só aparece depois de `atraso` segundos (config.json "atraso", padrão 6): a sessão abre o alerta
     // logo antes de escrever a pergunta, e o aviso não pode chegar antes da mensagem. Resolvido antes disso, nem aparece.
     var todas: [Pendencia] = []
+    var mostradoEm: [String: Double] = [:]   // quando cada pedido apareceu ("Terminou" some 10 s depois)
+    var locais: [Pendencia] = []
+    var fechadasNuvem = Set<String>()
+    let leitorTela = LeitorTela()
     var atraso: Double {
         let v = lerConfig()["atraso"]
         return (v as? Double) ?? (v as? Int).map(Double.init) ?? 6
@@ -733,9 +886,21 @@ final class App: NSObject, NSApplicationDelegate {
     func lerArquivos() {
         defer { atualizarAviso() }
         let m = (try? FileManager.default.attributesOfItem(atPath: arqPendencias))?[.modificationDate] as? Date
-        if primeira || m != mtime { mtime = m; todas = lerPendencias() }
+        if primeira || m != mtime { mtime = m; locais = lerPendencias() }
+        leitorTela.atualizar()
+        // pedido da tela fechado com "Abrir conversa" fica escondido só enquanto continuar na tela; se sair e voltar, avisa de novo
+        let naTela = Set(leitorTela.achados.map { $0.id })
+        fechadasNuvem = fechadasNuvem.filter { !$0.hasPrefix("tela-") || naTela.contains($0) }
+        todas = (locais + pendenciasNuvem() + leitorTela.achados).filter { !fechadasNuvem.contains($0.id) }.sorted { $0.criado > $1.criado }
         let agora = Date().timeIntervalSince1970, espera = atraso
-        let visiveis = todas.filter { agora - $0.criado >= espera }
+        // pedido da tela só aparece se ainda estiver na tela agora (aprovado durante a espera, nem aparece)
+        let mostrando = Set(e.pendencias.map { $0.id })
+        // "Terminou: …" é menos importante: some sozinho 10 s depois de aparecer
+        for p in e.pendencias where p.tipo == "pronto" {
+            if let t = mostradoEm[p.id], agora - t >= 10 { mostradoEm[p.id] = nil; resolver(p) }
+        }
+        let visiveis = todas.filter { agora - $0.criado >= espera &&
+            (!$0.id.hasPrefix("tela-") || mostrando.contains($0.id) || leitorTela.presentes.contains($0.id)) }
         if !primeira && visiveis.map({ $0.id }) == e.pendencias.map({ $0.id }) {
             // lembrete a cada 3 min enquanto houver pedido e o Claude não estiver na frente
             if !e.pendencias.isEmpty && Date().timeIntervalSince(ultimoSom) > 180 {
@@ -745,9 +910,9 @@ final class App: NSObject, NSApplicationDelegate {
             return
         }
         e.pendencias = visiveis
-        if e.pendencias.isEmpty { avisoEscondido = false }
+        for p in visiveis where mostradoEm[p.id] == nil { mostradoEm[p.id] = agora }
+        e.escondidos.formIntersection(Set(e.pendencias.map { $0.id }))
         if !primeira && e.pendencias.contains(where: { !vistos.contains($0.id) }) {
-            avisoEscondido = false
             avisoAte = Date().addingTimeInterval(8)
             if !claudeNaFrente() { NSSound(named: "Sosumi")?.play() }
             ultimoSom = Date(); pulsarAte = Date().addingTimeInterval(4)
@@ -775,7 +940,15 @@ final class App: NSObject, NSApplicationDelegate {
     func resolver(_ p: Pendencia) {
         e.pendencias.removeAll { $0.id == p.id }
         todas.removeAll { $0.id == p.id }
+        locais.removeAll { $0.id == p.id }
         vistos.insert(p.id)
+        if p.id.hasPrefix("tela-") {
+            fechadasNuvem.insert(p.id); atualizarAviso(); ajustarAltura(); return
+        }
+        if p.id.hasPrefix("nuvem-") {
+            fechadasNuvem.insert(p.id); fecharNuvem(p.id)
+            atualizarAviso(); ajustarAltura(); return
+        }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: (pastaAlerta as NSString).appendingPathComponent("bin/alerta"))
         proc.arguments = ["fechar", p.id]

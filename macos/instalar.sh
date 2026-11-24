@@ -9,13 +9,18 @@ command -v swiftc >/dev/null || { echo "Falta o compilador Swift: rode  xcode-se
 mkdir -p "$BASE/bin" "$BASE/app" "$HOME/Library/LaunchAgents"
 [ -f "$BASE/pendencias.json" ] || echo '[]' > "$BASE/pendencias.json"
 cp bin/alerta "$BASE/bin/alerta"; chmod +x "$BASE/bin/alerta"
-cp src/ClaudeAlerta.swift "$BASE/app/"
-echo "Compilando..."
-# compila num arquivo novo e troca: sobrescrever o binário em uso faz o macOS matar o app (OS_REASON_CODESIGNING)
-swiftc -O -swift-version 5 "$BASE/app/ClaudeAlerta.swift" -o "$BASE/app/ClaudeAlerta.novo"
-codesign --force --sign - "$BASE/app/ClaudeAlerta.novo" 2>/dev/null || true
-rm -f "$BASE/app/ClaudeAlerta"
-mv -f "$BASE/app/ClaudeAlerta.novo" "$BASE/app/ClaudeAlerta"
+cp bin/nuvem "$BASE/bin/nuvem"; chmod +x "$BASE/bin/nuvem"
+mkdir -p "$BASE/nuvem"
+# Só recompila quando o código muda.
+if ! cmp -s src/ClaudeAlerta.swift "$BASE/app/ClaudeAlerta.swift" || [ ! -x "$BASE/app/ClaudeAlerta" ]; then
+  cp src/ClaudeAlerta.swift "$BASE/app/"
+  echo "Compilando..."
+  # compila num arquivo novo e troca: sobrescrever o binário em uso faz o macOS matar o app (OS_REASON_CODESIGNING)
+  swiftc -O -swift-version 5 "$BASE/app/ClaudeAlerta.swift" -o "$BASE/app/ClaudeAlerta.novo"
+  codesign --force --sign - "$BASE/app/ClaudeAlerta.novo" 2>/dev/null || true
+  rm -f "$BASE/app/ClaudeAlerta"
+  mv -f "$BASE/app/ClaudeAlerta.novo" "$BASE/app/ClaudeAlerta"
+fi
 
 [ -f "$PLIST" ] || cat > "$PLIST" <<P
 <?xml version="1.0" encoding="UTF-8"?>
@@ -36,6 +41,22 @@ else
   launchctl bootstrap "gui/$(id -u)" "$PLIST"
 fi
 
+# Leitor da janela do Claude (threads na nuvem). Não pede permissão: o hook liga ele de dentro das sessões,
+# e o macOS usa a Acessibilidade do próprio app Claude.
+if ! cmp -s src/AlertaTela.swift "$BASE/bin/AlertaTela.swift" || [ ! -x "$BASE/bin/alerta-tela" ]; then
+  cp src/AlertaTela.swift "$BASE/bin/"
+  swiftc -O -swift-version 5 "$BASE/bin/AlertaTela.swift" -o "$BASE/bin/alerta-tela.novo"
+  codesign --force --sign - "$BASE/bin/alerta-tela.novo" 2>/dev/null || true
+  pkill -f "$BASE/bin/alerta-tela" 2>/dev/null || true
+  rm -f "$BASE/bin/alerta-tela"
+  mv -f "$BASE/bin/alerta-tela.novo" "$BASE/bin/alerta-tela"
+fi
+rm -f "$BASE/.tela-tentativa"
+
+# Versão antiga com leitor à parte: some
+launchctl bootout "gui/$(id -u)/com.claude-alerta.tela" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.claude-alerta.tela.plist" "$BASE/app/LeitorTela" "$BASE/app/LeitorTela.swift"
+
 # Hooks globais do Claude Code (~/.claude/settings.json), sem mexer no resto do arquivo
 /usr/bin/python3 - "$BASE/bin/alerta" <<'PY'
 import json, os, sys, shutil, time
@@ -45,7 +66,7 @@ os.makedirs(os.path.dirname(p), exist_ok=True)
 s = json.load(open(p)) if os.path.exists(p) and os.path.getsize(p) else {}
 if os.path.exists(p) and not os.path.exists(p + ".antes-claude-alerta"): shutil.copy(p, p + ".antes-claude-alerta")
 h = s.setdefault("hooks", {})
-for ev in ["Notification", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"]:
+for ev in ["Notification", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"]:
     lst = h.setdefault(ev, [])
     lst[:] = [g for g in lst if not any("claude-alerta" in (x.get("command") or "") for x in g.get("hooks", []))]
     if ev == "PreToolUse":

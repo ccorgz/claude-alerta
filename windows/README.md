@@ -85,8 +85,15 @@ Para conferir o uso na hora:
 | No bloco | Fonte | Atualiza |
 |---|---|---|
 | Pedidos | `%USERPROFILE%\.claude-alerta\pendencias.json`, escrito pelo `alerta.exe` (hooks e sessões) | a cada 1 s |
+| Pedidos de threads na nuvem | cartões "Allow Claude…" lidos na janela do app Claude pela UI Automation do Windows | a cada 3 s |
 | Sessões ativas | `%USERPROFILE%\.claude\sessions\*.json` (só processo vivo); título em `%APPDATA%\Claude\claude-code-sessions\`; segundo plano pelos processos do Bash do Claude (`shell-snapshots`), via WMI | a cada 3 s |
-| Uso 5h / semana | `%USERPROFILE%\.claude-alerta\uso.json`, escrito por `alerta.exe uso` | o app relê a cada 5 s; o arquivo é renovado no máximo a cada 2 min, enquanto houver sessão em uso |
+| Uso 5h / semana | `%USERPROFILE%\.claude-alerta\uso.json`, escrito por `alerta.exe uso` | o app relê a cada 5 s; os hooks renovam o arquivo no máximo a cada 2 min e, se nenhuma sessão local rodar, o próprio app pede leitura nova quando ela passa de 3 min |
+
+### Threads na nuvem
+
+Threads e coordenador de projetos do claude.ai rodam **na nuvem**. Quando pedem algo ("Allow Claude to connect to …"), nada passa pelo PC: não há hook nem arquivo local. E a thread não consegue avisar por conta própria justamente quando perdeu a conexão com o computador.
+
+Por isso o app lê a janela do Claude a cada 3 s pela **UI Automation** do Windows, que não pede permissão nenhuma. Todo cartão com "Allow Claude…" seguido de um botão "Deny" vira pedido, que some sozinho quando sai da tela. Se você clicar em "Abrir conversa" e o mesmo cartão voltar depois, ele avisa de novo. Um cartão aprovado durante os segundos de espera nem chega a aparecer. Só aparece o que está desenhado na janela do Claude, ou seja, o projeto aberto nela.
 
 ### Como o uso é lido (sem senha)
 
@@ -117,8 +124,11 @@ Os pedidos abertos dentro de uma sessão da aba Code ganham sozinhos o link da c
 | `UserPromptSubmit` (você respondeu na sessão) | fecha **todos** os pedidos da sessão, inclusive os abertos à mão com `alerta abrir` |
 | `PostToolUse` de `AskUserQuestion` ou `ExitPlanMode` (você respondeu a pergunta ou o plano) | fecha **todos** os pedidos da sessão |
 | `PostToolUse` das outras ferramentas (você aprovou e ela rodou) | fecha só o pedido automático da sessão |
+| `Stop` (terminou de responder) | abre o aviso "Terminou: <conversa>" com o começo da resposta e o link. Ele some sozinho 10 s depois de aparecer. Em thread de projeto conectada ao PC, mostra o tópico da thread e o projeto, e o link abre o projeto com a thread ao lado |
 | `SessionEnd` | fecha todos os pedidos da sessão |
 | todos acima | disparam a leitura do uso, no máximo a cada 2 min |
+
+Quando uma janela do plano renova e ainda não houve leitura nova, o painel mostra "renovou · conta no próximo uso", porque a janela de 5h só começa a contar na próxima mensagem.
 
 O comando dos hooks é `"C:/Users/<você>/.claude-alerta/bin/alerta.exe" hook`, com barras normais, para funcionar tanto no Git Bash (que o Claude Code usa no Windows) quanto no `cmd`. Os hooks nunca bloqueiam a sessão: qualquer erro é engolido.
 

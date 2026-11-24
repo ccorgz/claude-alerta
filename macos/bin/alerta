@@ -203,6 +203,85 @@ def atualizar_uso():
     print(json.dumps(out, ensure_ascii=False))
     return 0
 
+def garantir_tela():
+    """Liga o leitor da janela do Claude (bin/alerta-tela) se ele não estiver rodando.
+    Rodado de dentro de uma sessão, o macOS atribui o leitor ao app Claude, que já tem a Acessibilidade:
+    nada de permissão nova. Ele grava ~/.claude-alerta/tela.json a cada 3 s; leitura recente = está vivo."""
+    leitor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alerta-tela")
+    if sys.platform != "darwin" or not os.access(leitor, os.X_OK):
+        return
+    arq = os.path.join(PASTA, "tela.json")
+    try:
+        with open(arq) as f:
+            d = json.load(f)
+        if time.time() - float(d.get("lido", 0)) < 15:
+            return
+    except Exception:
+        pass
+    marca = os.path.join(PASTA, ".tela-tentativa")  # no máximo uma tentativa a cada 30 s
+    try:
+        if time.time() - os.path.getmtime(marca) < 30:
+            return
+    except OSError:
+        pass
+    open(marca, "w").close()
+    subprocess.Popen([leitor], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, close_fds=True)
+
+def quem_e(sid="", transcript=""):
+    """(nome, onde) da sessão: thread de projeto → (tópico, projeto); senão → (título da barra lateral do Desktop, "")."""
+    caminhos = [transcript] if transcript else []
+    if sid:
+        import glob
+        caminhos += glob.glob(os.path.expanduser("~/.claude/projects/*/%s.jsonl" % sid))
+    for c in caminhos[:1]:
+        try:
+            with open(c, "rb") as f:
+                linhas = [f.readline().decode("utf-8", "ignore") for _ in range(80)]
+        except OSError:
+            break
+        if any("<wake reason=" in l for l in linhas):
+            txt = "".join(linhas)
+            pj = re.search(r'Project: \\"([^"\\]{1,120})\\"', txt)
+            tp = re.search(r'Topic: \\"([^"\\]{1,160})\\"', txt)
+            if pj or tp:
+                return (tp.group(1) if tp else "Thread de projeto"), (pj.group(1) if pj else "")
+    host = os.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
+    if host.startswith("local_"):
+        import glob
+        for f in glob.glob(os.path.expanduser("~/Library/Application Support/Claude/claude-code-sessions/*/*/%s.json" % host)):
+            try:
+                t = (json.load(open(f)).get("title") or "").strip()
+                if t:
+                    return t, ""
+            except Exception:
+                pass
+    return "", ""
+
+def ultima_resposta(ev):
+    """Começo da última resposta do Claude na sessão (para o detalhe do aviso de "terminou")."""
+    t = ev.get("last_assistant_message") or ""
+    if not t and ev.get("transcript_path"):
+        try:
+            with open(ev["transcript_path"], "rb") as f:
+                f.seek(0, 2); n = f.tell(); f.seek(max(0, n - 400000))
+                linhas = f.read().decode("utf-8", "ignore").splitlines()
+            for l in reversed(linhas):
+                try:
+                    j = json.loads(l)
+                except Exception:
+                    continue
+                if j.get("type") != "assistant":
+                    continue
+                partes = [c.get("text", "") for c in (j.get("message") or {}).get("content") or [] if isinstance(c, dict) and c.get("type") == "text"]
+                t = " ".join(x for x in partes if x).strip()
+                if t:
+                    break
+        except OSError:
+            pass
+    t = re.sub(r"[`*_#>\[\]]", "", " ".join(t.split()))
+    return (t[:157] + "…") if len(t) > 160 else t
+
 def hook():
     try:
         ev = json.load(sys.stdin)
@@ -210,6 +289,10 @@ def hook():
         return
     try:
         talvez_atualizar_uso()
+    except Exception:
+        pass
+    try:
+        garantir_tela()
     except Exception:
         pass
     nome = ev.get("hook_event_name", "")
@@ -225,7 +308,20 @@ def hook():
         else:
             titulo, tipo = "Claude precisa de você", "outro"
         item = novo_item(titulo, msg, tipo, pasta, origem="hook", sessao_id=sid, transcript=ev.get("transcript_path", ""))
-        # uma pendência automática por sessão: substitui a anterior
+        def troca(d):
+            # "esperando sua resposta" logo depois de terminar: o aviso de "terminou" já diz mais, fica ele
+            if tipo == "outro" and any(p.get("origem") == "hook" and p.get("sessao_id") == sid and p.get("tipo") == "pronto" for p in d):
+                return None, None
+            # uma pendência automática por sessão: substitui a anterior
+            return [p for p in d if not (p.get("origem") == "hook" and p.get("sessao_id") == sid)] + [item], None
+        mexer(troca)
+    elif nome == "Stop":
+        # terminou de responder: avisa com o nome da conversa/thread, um trecho da resposta e o link certo
+        if ev.get("stop_hook_active"):
+            return
+        quem, onde = quem_e(sid, ev.get("transcript_path", ""))
+        item = novo_item("Terminou: " + (quem or pasta), ultima_resposta(ev), "pronto", onde or pasta,
+                         origem="hook", sessao_id=sid, transcript=ev.get("transcript_path", ""))
         mexer(lambda d: ([p for p in d if not (p.get("origem") == "hook" and p.get("sessao_id") == sid)] + [item], None))
     elif nome == "PreToolUse" and ev.get("tool_name") in ("AskUserQuestion", "ExitPlanMode"):
         # pergunta ou plano esperando aprovação: avisa já, sem esperar o Notification
@@ -239,10 +335,10 @@ def hook():
         item = novo_item(titulo, det, tipo, pasta, origem="hook", sessao_id=sid, transcript=ev.get("transcript_path", ""))
         mexer(lambda d: ([p for p in d if not (p.get("origem") == "hook" and p.get("sessao_id") == sid)] + [item], None))
     elif nome == "UserPromptSubmit" or (nome == "PostToolUse" and ev.get("tool_name") in ("AskUserQuestion", "ExitPlanMode")):
-        # você respondeu nessa sessão (mensagem, pergunta ou plano): todos os pedidos dela estão resolvidos,
-        # inclusive os abertos à mão com `alerta abrir`
+        # você respondeu nessa sessão (mensagem, pergunta ou plano): fecham os pedidos dela que eram pergunta
+        # (automáticos e chave/decisão/aprovação abertos à mão). Avisos informativos ("outro") ficam até você fechar cada um.
         if sid:
-            mexer(lambda d: ([p for p in d if p.get("sessao_id") != sid], None))
+            mexer(lambda d: ([p for p in d if not (p.get("sessao_id") == sid and (p.get("origem") == "hook" or p.get("tipo") in ("chave", "decisao", "aprovacao")))], None))
     elif nome == "PostToolUse":
         # aprovou uma permissão e a ferramenta rodou: fecha só o pedido automático (os manuais esperam sua resposta)
         mexer(lambda d: ([p for p in d if not (p.get("origem") == "hook" and p.get("sessao_id") == sid)], None))
@@ -260,7 +356,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("abrir"); a.add_argument("titulo"); a.add_argument("--detalhe", default="")
-    a.add_argument("--tipo", default="outro", choices=["chave", "decisao", "aprovacao", "outro"])
+    a.add_argument("--tipo", default="outro", choices=["chave", "decisao", "aprovacao", "outro", "pronto"])
     a.add_argument("--sessao", default=""); a.add_argument("--link", default="")
     f = sub.add_parser("fechar"); f.add_argument("id")
     sub.add_parser("listar")

@@ -1,0 +1,136 @@
+#!/usr/bin/python3
+"""Claude Alerta / nuvem: threads e coordenador de projetos do claude.ai rodam na NUVEM, sem os hooks do
+Claude Code do Mac. Para acender um pedido ou aparecer em "Sessões ativas", gravam um arquivo por thread em
+~/.claude-alerta/nuvem/<chave>.json. O app ClaudeAlerta lê essa pasta a cada 1-3 s.
+
+A chave é o id da mensagem raiz da thread (cmsg_...). O coordenador usa a chave "coordenador".
+Pela nuvem (device_bash), a pasta aparece em $HOME/mnt/.claude-alerta:
+
+  N="python3 $HOME/mnt/.claude-alerta/bin/nuvem"
+  $N trabalhando --chave cmsg_X --nome "Título da thread"            # aparece em Sessões ativas (vale 45 min)
+  $N pedido      --chave cmsg_X --nome "Título" --titulo "Pergunta curta" [--detalhe "o que decidir"]
+                 [--tipo decisao|aprovacao|chave|outro]               # acende o alerta (som + cartão)
+  $N fechar      --chave cmsg_X                                        # apaga o pedido (a sessão segue)
+  $N fim         --chave cmsg_X                                        # some de tudo (thread terminou)
+  $N listar
+
+Opcionais: --canal chan_... (projeto; sem ele o link abre só o Claude), --projeto "Nome", --link claude://...,
+--horas N (validade do pedido, padrão 12), --minutos N (validade de "trabalhando", padrão 45).
+"""
+import argparse, json, os, re, sys, time
+
+PASTA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "nuvem")
+# projeto padrão: ~/.claude-alerta/config.json {"canal_padrao": "chan_…", "projeto_padrao": "Nome"}, ou --canal/--projeto
+try:
+    _cfg = json.load(open(os.path.join(os.path.dirname(PASTA), "config.json")))
+except Exception:
+    _cfg = {}
+CANAL_PADRAO = _cfg.get("canal_padrao", "")
+PROJETO_PADRAO = _cfg.get("projeto_padrao", "Claude · projeto")
+
+
+def arquivo(chave):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", chave):
+        sys.exit("chave inválida: use o cmsg_ da thread ou 'coordenador'")
+    return os.path.join(PASTA, chave + ".json")
+
+
+def ler(chave):
+    try:
+        with open(arquivo(chave)) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def gravar(chave, d):
+    os.makedirs(PASTA, exist_ok=True)
+    d["chave"] = chave
+    d["atualizado"] = time.time()
+    tmp = arquivo(chave) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, arquivo(chave))  # troca atômica: o app nunca lê arquivo pela metade
+
+
+def base(x):
+    d = ler(x.chave)
+    canal = x.canal or d.get("canal") or CANAL_PADRAO
+    d["canal"] = canal
+    d["projeto"] = x.projeto or d.get("projeto") or PROJETO_PADRAO
+    if x.link:
+        d["link"] = x.link
+    elif not d.get("link") and canal:
+        d["link"] = "claude://claude.ai/code/project/" + canal + (
+            "?thread=" + x.chave if x.chave.startswith("cmsg_") else "")
+    return d
+
+
+def sessao(d, x, estado, ate):
+    s = d.get("sessao") or {}
+    agora = time.time()
+    if s.get("estado") not in ("trabalhando", "esperando") or (s.get("ate") or 0) < agora:
+        s["desde"] = agora
+    s["estado"] = estado
+    s["ate"] = ate
+    if getattr(x, "nome", ""):
+        s["nome"] = x.nome
+    s.setdefault("nome", "Coordenador do projeto" if x.chave == "coordenador" else "Thread da nuvem")
+    d["sessao"] = s
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for nome in ("trabalhando", "pedido", "fechar", "fim"):
+        p = sub.add_parser(nome)
+        p.add_argument("--chave", required=True)
+        p.add_argument("--nome", default="")
+        p.add_argument("--canal", default="")
+        p.add_argument("--projeto", default="")
+        p.add_argument("--link", default="")
+        if nome == "trabalhando":
+            p.add_argument("--minutos", type=float, default=45)
+        if nome == "pedido":
+            p.add_argument("--titulo", required=True)
+            p.add_argument("--detalhe", default="")
+            p.add_argument("--tipo", default="decisao", choices=["chave", "decisao", "aprovacao", "outro"])
+            p.add_argument("--horas", type=float, default=12)
+    sub.add_parser("listar")
+    x = ap.parse_args()
+    agora = time.time()
+
+    if x.cmd == "listar":
+        for n in sorted(os.listdir(PASTA)) if os.path.isdir(PASTA) else []:
+            if not n.endswith(".json"):
+                continue
+            d = ler(n[:-5])
+            s, p = d.get("sessao") or {}, d.get("pedido") or {}
+            viva = s.get("estado") in ("trabalhando", "esperando") and (s.get("ate") or 0) > agora
+            print("%s  sessao=%s  pedido=%s" % (n[:-5], (s.get("estado") if viva else "-"),
+                                               (p.get("titulo") if p and (p.get("expira") or 0) > agora else "-")))
+        return
+
+    d = base(x)
+    if x.cmd == "trabalhando":
+        sessao(d, x, "trabalhando", agora + x.minutos * 60)
+    elif x.cmd == "pedido":
+        # um pedido por thread: um novo substitui o anterior (e toca o som de novo)
+        exp = agora + x.horas * 3600
+        d["pedido"] = {"titulo": x.titulo, "detalhe": x.detalhe, "tipo": x.tipo, "criado": agora, "expira": exp}
+        sessao(d, x, "esperando", exp)
+    elif x.cmd == "fechar":
+        d["pedido"] = None
+        s = d.get("sessao") or {}
+        if s.get("estado") == "esperando":
+            sessao(d, x, "trabalhando", agora + 45 * 60)  # respondeu: a thread volta a trabalhar
+    elif x.cmd == "fim":
+        d["pedido"] = None
+        if d.get("sessao"):
+            d["sessao"]["estado"] = "parada"
+            d["sessao"]["ate"] = agora
+    gravar(x.chave, d)
+    print("ok", x.cmd, x.chave)
+
+
+main()

@@ -36,7 +36,8 @@ Funciona com o **app Claude Desktop** (aba Code) e com o Claude Code no terminal
 
 - **macOS 14 (Sonoma) ou mais novo.**
 - **Ferramentas de linha de comando da Apple**: o instalador usa `swiftc` e `/usr/bin/python3`. Se não tiver, rode `xcode-select --install`.
-- **Claude Code no próprio Mac**: pelo app Claude Desktop (aba Code), pelo terminal ou por IDE. Sessões na nuvem não alcançam os arquivos locais.
+- **Claude Code no próprio Mac**: pelo app Claude Desktop (aba Code), pelo terminal ou por IDE.
+- **App Claude com Acessibilidade ligada** (para threads de projeto na nuvem): é a mesma chave que o Claude já usa para controlar o computador. O Claude Alerta não pede nenhuma permissão própria. Veja [Threads na nuvem](#threads-na-nuvem).
 - **Para o uso de 5h/semana**: conta do Claude com plano (Pro, Max, Team ou Enterprise). Com chave de API, Bedrock ou Vertex não existe limite de plano, e essa parte fica vazia.
 
 Não precisa instalar mais nada: sem Homebrew, sem Node, sem pacote Python.
@@ -53,7 +54,8 @@ O instalador:
 2. compila o app em `~/.claude-alerta/app/ClaudeAlerta`;
 3. registra o app para abrir no login (`~/Library/LaunchAgents/com.claude-alerta.plist`). Isso só acontece na primeira vez, para o macOS não repetir o aviso de "Background Activity";
 4. liga os hooks no `~/.claude/settings.json` sem mexer no resto do arquivo. Na primeira instalação, guarda uma cópia em `settings.json.antes-claude-alerta`;
-5. tenta ler o uso pela primeira vez. Se não conseguir, a barra preenche sozinha na primeira vez que uma sessão do Claude Code rodar.
+5. compila o leitor da janela do Claude (`bin/alerta-tela`), que os hooks ligam sozinhos;
+6. tenta ler o uso pela primeira vez. Se não conseguir, a barra preenche sozinha na primeira vez que uma sessão do Claude Code rodar.
 
 Para atualizar, basta rodar de novo: ele recompila e reinicia o app. O binário novo é compilado à parte, assinado de novo (`codesign --force --sign -`) e só depois trocado, porque sobrescrever o binário em uso faz o macOS matar o app.
 
@@ -84,8 +86,9 @@ Fora de uma sessão do Claude Code, esse comando só funciona se o `claude` esti
 | Na ilha | Fonte | Atualiza |
 |---|---|---|
 | Pedidos | `~/.claude-alerta/pendencias.json`, escrito pelo comando `alerta` (hooks e sessões) | a cada 1 s |
+| Pedidos de threads na nuvem | `~/.claude-alerta/tela.json`, escrito por `alerta-tela` (cartões "Allow Claude…" na janela do Claude) | a cada 3 s |
 | Sessões ativas | `~/.claude/sessions/*.json`, que o próprio Claude Code mantém (só conta processo vivo); título em `~/Library/Application Support/Claude/claude-code-sessions/` | a cada 3 s |
-| Uso 5h / semana | `~/.claude-alerta/uso.json`, escrito por `alerta uso` | o app relê a cada 5 s; o arquivo é renovado no máximo a cada 2 min, enquanto houver sessão em uso |
+| Uso 5h / semana | `~/.claude-alerta/uso.json`, escrito por `alerta uso` | o app relê a cada 5 s; os hooks renovam o arquivo no máximo a cada 2 min e, se nenhuma sessão local rodar, o próprio app pede leitura nova quando ela passa de 3 min |
 
 ### Como o uso é lido (e por que não pede senha)
 
@@ -128,10 +131,29 @@ Os pedidos abertos dentro de uma sessão da aba Code do app ganham sozinhos o li
 | `UserPromptSubmit` (você respondeu na sessão) | fecha **todos** os pedidos da sessão, inclusive os abertos à mão com `alerta abrir` |
 | `PostToolUse` de `AskUserQuestion` ou `ExitPlanMode` (você respondeu a pergunta ou o plano) | fecha **todos** os pedidos da sessão |
 | `PostToolUse` das outras ferramentas (você aprovou e ela rodou) | fecha só o pedido automático da sessão |
+| `Stop` (terminou de responder) | abre o aviso "Terminou: <conversa>", com o começo da resposta e o link. Ele some sozinho 10 s depois de aparecer |
 | `SessionEnd` | fecha todos os pedidos da sessão |
-| todos acima | disparam a leitura do uso, no máximo a cada 2 min |
+| todos acima | disparam a leitura do uso (no máximo a cada 2 min) e ligam o leitor da janela, se estiver parado |
 
 Os hooks nunca bloqueiam a sessão: qualquer erro é engolido.
+
+### Threads na nuvem
+
+Threads e coordenador de projetos do claude.ai rodam **na nuvem**. Quando pedem algo ("Allow Claude to connect to …", uma pergunta, uma aprovação), nada passa pelo Mac: não há hook, arquivo nem log local. E a thread não consegue avisar por conta própria justamente quando perdeu a conexão com o Mac.
+
+Por isso o `bin/alerta-tela` lê a janela do app Claude a cada 3 s e grava em `~/.claude-alerta/tela.json` todo cartão com "Allow Claude…" seguido de um botão "Deny". Para os projetos que **não estão abertos** na janela, o leitor usa os **banners** que o próprio app Claude manda pelo macOS quando uma thread pede algo ou termina com o app em segundo plano. Ele confere a Central de Notificações a cada 1 s, e cada banner do Claude vira um pedido com o nome da thread, o projeto e o link do projeto. O leitor aprende sozinho o link de cada projeto quando você abre o projeto no app, e guarda isso em `~/.claude-alerta/projetos.json`. Quando você abre a thread no Claude, o pedido fecha sozinho. Banner de algo que os hooks já avisaram não repete. Para isso, as notificações do Claude precisam estar em **Banners** (o padrão) e o modo Foco não pode estar bloqueando o Claude. Tudo o que o leitor vê fica anotado em `~/.claude-alerta/tela.log`.
+
+Para saber quando uma conversa ou thread **terminou de responder**, o app usa o hook `Stop` do Claude Code. As threads de projeto conectadas ao Mac rodam como sessões locais, então ele vale para elas também. O aviso traz o nome da conversa (ou o tópico da thread e o projeto), o começo da resposta e o link que abre a conversa certa. O aviso "N threads waiting on you" da janela não é usado, porque não diz qual thread é.
+
+O app transforma isso em pedido, que some sozinho quando sai da tela. Se você clicar em "Abrir conversa" e o mesmo cartão voltar depois, ele avisa de novo.
+
+**Sem permissão nova.** O leitor é ligado pelo hook de dentro de uma sessão do Claude Code, então o macOS o atribui ao próprio app Claude. Basta o **Claude** estar ligado em Ajustes do Sistema → Privacidade e Segurança → Acessibilidade, o que já acontece quando você usa o controle do computador. Se não estiver, o leitor grava `"permissao": false` e sai, sem abrir janela nenhuma.
+
+- Ele começa na primeira vez que alguma sessão do Claude Code roda depois de ligar o Mac, e fica uma instância só.
+- Só vê o que está desenhado na janela do Claude, mesmo com ela atrás de outras janelas. O pedido de um projeto que não está aberto no app não aparece.
+- Para conferir o que ele lê: `~/.claude-alerta/bin/alerta-tela --uma`.
+
+As threads conectadas ao Mac também podem acender pedidos com `bin/nuvem` (instruções no próprio arquivo).
 
 ## Estrutura
 
@@ -142,6 +164,8 @@ claude-alerta/macos/
 ├── instalar.sh              instala ou atualiza
 ├── desinstalar.sh           remove tudo (app, login, hooks, pedidos e uso salvo)
 ├── bin/alerta               comando (Python 3, sem dependências)
+├── bin/nuvem                pedidos gravados por threads na nuvem conectadas ao Mac
+├── src/AlertaTela.swift     leitor da janela do Claude (vira bin/alerta-tela)
 ├── src/ClaudeAlerta.swift   app (Swift/SwiftUI, arquivo único, sem dependências)
 └── docs/                    prints do app (barra, painel, aviso)
 ```
@@ -172,5 +196,6 @@ Esse script fecha o app, tira ele do login, remove os hooks do `~/.claude/settin
 - **O uso mostra "–" ou "O uso aparece quando uma sessão do Claude Code rodar":** ainda não houve leitura. Use qualquer sessão do Claude Code por um instante, ou rode `alerta uso` de dentro de uma sessão. Com chave de API (sem plano), não existe uso de plano para mostrar.
 - **O uso parece velho:** o painel mostra "atualizado há X". Ele só renova enquanto alguma sessão está em uso, e no máximo a cada 2 min. Para forçar, use o botão direito na ilha e *Atualizar uso agora*, depois rode `alerta uso` numa sessão.
 - **"Abrir conversa" abre só o app:** o pedido não tem link. Em threads de projeto, passe `--link https://claude.ai/code/project/<projeto>?thread=<thread>`.
+- **Threads na nuvem não geram alerta:** rode `~/.claude-alerta/bin/alerta-tela --uma`. Se mostrar `"permissao": false`, ligue o **Claude** em Acessibilidade. O leitor sobe com a próxima ação de qualquer sessão do Claude Code.
 - **Conferir o visual sem olhar a tela:** `ALERTA_PNG=/tmp/ilha.png ~/.claude-alerta/app/ClaudeAlerta` grava um PNG do painel aberto e sai. Com `ALERTA_PNG_AVISO=1`, grava o aviso de pedido; com `ALERTA_PNG_AVISO=1 ALERTA_PNG_ICONE=1`, o modo só ícone.
 - **Erros do app:** veja `~/.claude-alerta/app/erro.log`.

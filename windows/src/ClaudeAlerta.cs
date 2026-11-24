@@ -25,6 +25,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using System.Windows.Automation;
 using WPath = System.Windows.Shapes.Path;
 using WEllipse = System.Windows.Shapes.Ellipse;
 using WRect = System.Windows.Shapes.Rectangle;
@@ -34,7 +35,7 @@ namespace ClaudeAlertaWin
 {
     // ------------------------------------------------------------------ dados
 
-    public class Janela { public double Pct; public DateTime? Renova; }
+    public class Janela { public double Pct; public DateTime? Renova; public bool Renovou; }
 
     public class Uso
     {
@@ -107,7 +108,7 @@ namespace ClaudeAlertaWin
             var r = Num(d, "renova");
             var j = new Janela { Pct = Math.Max(0, Math.Min(100, pct.Value)) };
             if (r != null) j.Renova = DeEpoch(r.Value);
-            if (j.Renova != null && j.Renova.Value < DateTime.Now) { j.Pct = 0; j.Renova = null; }   // janela já renovou
+            if (j.Renova != null && j.Renova.Value < DateTime.Now) { j.Pct = 0; j.Renova = null; j.Renovou = true; }   // janela já renovou
             return j;
         }
 
@@ -274,6 +275,12 @@ namespace ClaudeAlertaWin
         }
         // "agora" no primeiro minuto; depois "há 3 min"
         public static string HaQuanto(double s) { var t = Tempo(s); return t == "agora" ? t : "há " + t; }
+        // renovou e ainda não houve leitura nova: a janela de 5h só começa a contar no próximo uso
+        public static string Renova(Janela j)
+        {
+            if (j == null) return "";
+            return j.Renovou ? "renovou · conta no próximo uso" : Renova(j.Renova);
+        }
         public static string Renova(DateTime? d)
         {
             if (d == null) return "";
@@ -284,7 +291,7 @@ namespace ClaudeAlertaWin
         }
         public static string RotuloTipo(string t)
         {
-            switch (t) { case "chave": return "chave"; case "decisao": return "decisão"; case "aprovacao": return "aprovação"; default: return "pedido"; }
+            switch (t) { case "chave": return "chave"; case "decisao": return "decisão"; case "aprovacao": return "aprovação"; case "pronto": return "pronto"; default: return "pedido"; }
         }
         static string nomeUsuario;
         public static string Saudacao()
@@ -581,7 +588,7 @@ namespace ClaudeAlertaWin
                 var n = Ui.T(par.Value == null ? "–" : Math.Round(par.Value.Pct) + "%", 12.5, par.Value == null ? tx2 : tx, true);
                 n.Margin = new Thickness(4, 0, 0, 0);
                 g.Children.Add(n);
-                g.ToolTip = par.Value == null ? par.Key : par.Key + ": " + Math.Round(par.Value.Pct) + "% · " + Fmt.Renova(par.Value.Renova);
+                g.ToolTip = par.Value == null ? par.Key : par.Key + ": " + Math.Round(par.Value.Pct) + "% · " + Fmt.Renova(par.Value);
                 p.Children.Add(g);
             }
             var borda = new Border { Background = C.Transparente, CornerRadius = new CornerRadius(5), Padding = new Thickness(9, 6, 9, 6), Child = p };
@@ -630,14 +637,15 @@ namespace ClaudeAlertaWin
         FrameworkElement Aviso()
         {
             var p = new StackPanel();
-            foreach (var x in ctl.Pendencias.Take(3))
+            var noAviso = ctl.NoAviso;
+            foreach (var x in noAviso.Take(3))
             {
                 var pedido = x;
-                var c = Ui.CartaoPedido(x, link => ctl.AbrirPedido(pedido), ctl.EsconderAviso);
+                var c = Ui.CartaoPedido(x, link => ctl.AbrirPedido(pedido), () => ctl.EsconderAviso(pedido.Id));
                 c.Margin = new Thickness(0, 0, 0, 8);
                 p.Children.Add(c);
             }
-            if (ctl.Pendencias.Count > 3) p.Children.Add(Ui.T("+ " + (ctl.Pendencias.Count - 3) + " pedidos", 11.5, C.Tx2));
+            if (noAviso.Count > 3) p.Children.Add(Ui.T("+ " + (noAviso.Count - 3) + " pedidos", 11.5, C.Tx2));
             if (p.Children.Count > 0 && p.Children[p.Children.Count - 1] is FrameworkElement) ((FrameworkElement)p.Children[p.Children.Count - 1]).Margin = new Thickness(0);
             return p;
         }
@@ -660,7 +668,7 @@ namespace ClaudeAlertaWin
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });
             var k = new StackPanel();
             k.Children.Add(Ui.T(t, 13, C.Tx));
-            k.Children.Add(Ui.T(Fmt.Renova(j == null ? null : j.Renova), 11, C.Tx3));
+            k.Children.Add(Ui.T(Fmt.Renova(j), 11, C.Tx3));
             g.Children.Add(k);
             var b = Ui.Barra(j == null ? 0 : j.Pct, 7);
             b.Margin = new Thickness(12, 0, 0, 0);
@@ -795,6 +803,100 @@ namespace ClaudeAlertaWin
 
     // ------------------------------------------------------------------ controle
 
+    // Threads e coordenador de projetos rodam na nuvem: os cartões "Allow Claude to…" não passam por hook nem
+    // arquivo. O leitor lê a janela do app Claude pela UI Automation do Windows (sem pedir permissão) a cada 3 s
+    // e vira pedido todo cartão de permissão visível (texto "Allow Claude…" seguido de um botão "Deny").
+    public class LeitorTela
+    {
+        public List<Pendencia> Achados = new List<Pendencia>();
+        public HashSet<string> Presentes = new HashSet<string>();   // ids vistos na última leitura
+        Dictionary<string, double> desde = new Dictionary<string, double>();
+        Dictionary<string, int> faltas = new Dictionary<string, int>();
+
+        static string Chave(string s)
+        {
+            ulong h = 1469598103934665603;   // FNV-1a: id igual entre reinícios do app
+            foreach (var b in Encoding.UTF8.GetBytes(s)) { h ^= b; h *= 1099511628211; }
+            return h.ToString("x");
+        }
+
+        // roda fora da thread da interface
+        public static List<string[]> Ler()
+        {
+            var r = new List<string[]>();
+            foreach (var pr in Process.GetProcessesByName("Claude"))
+            {
+                IntPtr h;
+                try { h = pr.MainWindowHandle; } catch { continue; }
+                if (h == IntPtr.Zero) continue;
+                AutomationElement raiz;
+                try { raiz = AutomationElement.FromHandle(h); } catch { continue; }
+                var textos = new List<string>();
+                var walker = TreeWalker.RawViewWalker;
+                var pilha = new Stack<KeyValuePair<AutomationElement, int>>();
+                pilha.Push(new KeyValuePair<AutomationElement, int>(raiz, 0));
+                int n = 0;
+                while (pilha.Count > 0 && n < 60000)
+                {
+                    var par = pilha.Pop(); n++;
+                    string t = "";
+                    try { t = (par.Key.Current.Name ?? "").Trim(); } catch { }
+                    if (t != "" && (textos.Count == 0 || textos[textos.Count - 1] != t)) textos.Add(t);
+                    if (par.Value >= 120) continue;
+                    var filhos = new List<AutomationElement>();
+                    try
+                    {
+                        var f = walker.GetFirstChild(par.Key);
+                        while (f != null) { filhos.Add(f); f = walker.GetNextSibling(f); }
+                    }
+                    catch { }
+                    for (int i = filhos.Count - 1; i >= 0; i--) pilha.Push(new KeyValuePair<AutomationElement, int>(filhos[i], par.Value + 1));   // ordem de leitura
+                }
+                for (int i = 0; i < textos.Count; i++)
+                {
+                    var t = textos[i];
+                    if (t.Length >= 160 || !(t.StartsWith("Allow Claude") || t.StartsWith("Permitir que o Claude") || t.StartsWith("Permitir ao Claude"))) continue;
+                    int k = -1;
+                    for (int j = i + 1; j < Math.Min(textos.Count, i + 14); j++)
+                        if (textos[j] == "Deny" || textos[j] == "Negar" || textos[j] == "Recusar") { k = j; break; }
+                    if (k < 0) continue;
+                    // o título às vezes vem partido ("Allow Claude to connect to" + "… in this thread?")
+                    string titulo = t; int ini = i + 1;
+                    while (!(titulo.EndsWith("?") || titulo.EndsWith(".")) && ini < k && ini < i + 4) { titulo += " " + textos[ini]; ini++; }
+                    var det = string.Join(" ", textos.Skip(ini).Take(k - ini).Where(x => x.Length > 3));
+                    r.Add(new[] { titulo, det.Length > 220 ? det.Substring(0, 220) : det });
+                }
+            }
+            return r;
+        }
+
+        // aplica uma leitura (na thread da interface)
+        public void Aplicar(List<string[]> cartoes)
+        {
+            double agora = Dados.Agora();
+            var novos = new List<Pendencia>();
+            var vistos = new HashSet<string>();
+            foreach (var c in cartoes)
+            {
+                var id = "tela-" + Chave(c[0] + "|" + c[1]);
+                if (!vistos.Add(id)) continue;
+                faltas[id] = 0;
+                double t0;
+                if (!desde.TryGetValue(id, out t0)) { t0 = agora; desde[id] = t0; }
+                novos.Add(new Pendencia { Id = id, Titulo = c[0], Detalhe = c[1], Tipo = "aprovacao", Sessao = "Claude · thread na nuvem", Link = "", Criado = t0 });
+            }
+            // tolera 1 leitura sem o cartão (janela redesenhando) antes de tirar o pedido
+            foreach (var p in Achados)
+            {
+                if (vistos.Contains(p.Id)) continue;
+                int f; faltas.TryGetValue(p.Id, out f); f++; faltas[p.Id] = f;
+                if (f <= 1) novos.Add(p); else { desde.Remove(p.Id); faltas.Remove(p.Id); }
+            }
+            Presentes = vistos;
+            Achados = novos;
+        }
+    }
+
     public class Controle
     {
         public List<Pendencia> Pendencias = new List<Pendencia>();
@@ -806,10 +908,16 @@ namespace ClaudeAlertaWin
         System.Windows.Forms.NotifyIcon bandeja;
         DateTime? mtime;
         HashSet<string> vistos = new HashSet<string>();
-        bool primeira = true, avisoEscondido, aviso, lendoSessoes;
+        bool primeira = true, aviso, lendoSessoes;
+        // ✕ num cartão do aviso esconde só aquele pedido (continua no painel e no contador)
+        readonly HashSet<string> escondidos = new HashSet<string>();
+        public List<Pendencia> NoAviso { get { return Pendencias.Where(p => !escondidos.Contains(p.Id)).ToList(); } }
         DateTime avisoAte = DateTime.MinValue, ultimoSom = DateTime.MinValue;
         double escalaDpi = 1;
         static System.Drawing.Icon iconeNormal, iconePedido;
+        LeitorTela tela = new LeitorTela();
+        HashSet<string> fechadasTela = new HashSet<string>();
+        bool lendoTela;
 
         public List<Sessao> Ativas { get { return Sessoes.Where(s => s.Ocupada || s.Fundo || Esperando(s)).ToList(); } }
         public bool Esperando(Sessao s) { return Pendencias.Any(p => (p.Link ?? "").Contains(s.Id)); }
@@ -826,8 +934,14 @@ namespace ClaudeAlertaWin
             Redesenhar();
 
             Repetir(1, delegate { LerPendencias(); Posicionar(); });
-            Repetir(3, delegate { LerSessoesFundo(); });
-            Repetir(5, delegate { Uso = Dados.LerUso(); Redesenhar(); });
+            Repetir(3, delegate { LerSessoesFundo(); LerTelaFundo(); });
+            // sem hook rodando ninguém relia o uso e o número congelava: o app pede leitura nova se a última tem > 3 min
+            Repetir(5, delegate {
+                Uso = Dados.LerUso();
+                var idade = Uso == null ? double.MaxValue : (DateTime.Now - Uso.Lido).TotalSeconds;
+                if (idade > 180 && (DateTime.UtcNow - ultimoPedidoUso).TotalSeconds > 120) { ultimoPedidoUso = DateTime.UtcNow; AtualizarUsoAgora(); }
+                Redesenhar();
+            });
             Repetir(30, delegate { Redesenhar(); });
 
             var png = Environment.GetEnvironmentVariable("ALERTA_PNG");
@@ -847,6 +961,18 @@ namespace ClaudeAlertaWin
             t.Start();
         }
 
+        void LerTelaFundo()
+        {
+            if (lendoTela) return;
+            lendoTela = true;
+            Task.Factory.StartNew(() => LeitorTela.Ler()).ContinueWith(t =>
+            {
+                lendoTela = false;
+                tela.Aplicar(t.Exception == null ? t.Result : new List<string[]>());
+                LerPendencias();
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
         void LerSessoesFundo()
         {
             if (lendoSessoes) return;
@@ -861,6 +987,7 @@ namespace ClaudeAlertaWin
         // Pedido só aparece depois de `atraso` segundos (config.json "atraso", padrão 6): a sessão abre o alerta
         // logo antes de escrever a pergunta, e o aviso não pode chegar antes da mensagem. Resolvido antes disso, nem aparece.
         List<Pendencia> todas = new List<Pendencia>();
+        Dictionary<string, double> mostradoEm = new Dictionary<string, double>();   // "Terminou" some 10 s depois de aparecer
         static double Atraso()
         {
             double v;
@@ -872,7 +999,19 @@ namespace ClaudeAlertaWin
             DateTime? m = File.Exists(Dados.ArqPendencias) ? File.GetLastWriteTimeUtc(Dados.ArqPendencias) : (DateTime?)null;
             if (primeira || m != mtime) { mtime = m; todas = Dados.LerPendencias(); }
             double agora = Dados.Agora(), espera = Atraso();
-            var visiveis = todas.Where(p => agora - p.Criado >= espera).ToList();
+            // cartão fechado com "Abrir conversa" fica escondido só enquanto continuar na tela; se sair e voltar, avisa de novo
+            fechadasTela.RemoveWhere(id => !tela.Presentes.Contains(id) && !tela.Achados.Any(p => p.Id == id));
+            // "Terminou: …" é menos importante: some sozinho 10 s depois de aparecer
+            foreach (var p in Pendencias.Where(x => x.Tipo == "pronto").ToList())
+            {
+                double t;
+                if (mostradoEm.TryGetValue(p.Id, out t) && agora - t >= 10) { mostradoEm.Remove(p.Id); Resolver(p); }
+            }
+            var mostrando = new HashSet<string>(Pendencias.Select(p => p.Id));
+            // pedido da tela só aparece se ainda estiver na tela agora (aprovado durante a espera, nem aparece)
+            var visiveis = todas.Concat(tela.Achados.Where(p => !fechadasTela.Contains(p.Id)))
+                .Where(p => agora - p.Criado >= espera && (!p.Id.StartsWith("tela-") || mostrando.Contains(p.Id) || tela.Presentes.Contains(p.Id)))
+                .OrderByDescending(p => p.Criado).ToList();
             if (!primeira && visiveis.Select(p => p.Id).SequenceEqual(Pendencias.Select(p => p.Id)))
             {
                 // lembrete a cada 3 min enquanto houver pedido e o Claude não estiver na frente
@@ -885,10 +1024,10 @@ namespace ClaudeAlertaWin
                 return;
             }
             Pendencias = visiveis;
-            if (Pendencias.Count == 0) avisoEscondido = false;
+            foreach (var p in visiveis) if (!mostradoEm.ContainsKey(p.Id)) mostradoEm[p.Id] = agora;
+            escondidos.IntersectWith(Pendencias.Select(p => p.Id).ToList());
             if (!primeira && Pendencias.Any(p => !vistos.Contains(p.Id)))
             {
-                avisoEscondido = false;
                 avisoAte = DateTime.Now.AddSeconds(8);
                 if (!W.ClaudeNaFrente()) Som();
                 ultimoSom = DateTime.Now;
@@ -913,7 +1052,7 @@ namespace ClaudeAlertaWin
         // pedido novo sempre sobe o aviso; com o Claude na frente, recolhe sozinho em 8 s; fora do Claude, fica
         void AtualizarAviso()
         {
-            bool mostrar = Pendencias.Count > 0 && !avisoEscondido && (!W.ClaudeNaFrente() || DateTime.Now < avisoAte);
+            bool mostrar = NoAviso.Count > 0 && (!W.ClaudeNaFrente() || DateTime.Now < avisoAte);
             if (mostrar == aviso) return;
             aviso = mostrar;
             if (painel.ModoAberto && painel.IsVisible) { painel.Desenhar(); return; }
@@ -921,7 +1060,7 @@ namespace ClaudeAlertaWin
             else if (painel.IsVisible) painel.Recolher(() => painel.Hide());
         }
 
-        public void EsconderAviso() { avisoEscondido = true; AtualizarAviso(); }
+        public void EsconderAviso(string id) { escondidos.Add(id); Redesenhar(); AtualizarAviso(); }
 
         public void Redesenhar()
         {
@@ -1045,10 +1184,18 @@ namespace ClaudeAlertaWin
         // "Abrir conversa" resolve o pedido: some da tela na hora e sai do arquivo pelo próprio `alerta fechar`
         public void AbrirPedido(Pendencia p)
         {
+            Resolver(p);
+            Abrir(p.Link);
+        }
+
+        // tira o pedido da tela na hora e do arquivo pelo próprio `alerta fechar`
+        void Resolver(Pendencia p)
+        {
             Pendencias.RemoveAll(x => x.Id == p.Id);
             todas.RemoveAll(x => x.Id == p.Id);
             vistos.Add(p.Id);
-            try
+            if (p.Id.StartsWith("tela-")) fechadasTela.Add(p.Id);
+            else try
             {
                 var exe = IOPath.Combine(Dados.Pasta, "bin", "alerta.exe");
                 Process.Start(new ProcessStartInfo(exe, "fechar " + p.Id) { UseShellExecute = false, CreateNoWindow = true });
@@ -1056,7 +1203,6 @@ namespace ClaudeAlertaWin
             catch { }
             Redesenhar();
             AtualizarAviso();
-            Abrir(p.Link);
         }
 
         public void Abrir(string link)
@@ -1075,6 +1221,7 @@ namespace ClaudeAlertaWin
             Redesenhar();
         }
 
+        DateTime ultimoPedidoUso = DateTime.MinValue;
         void AtualizarUsoAgora()
         {
             try

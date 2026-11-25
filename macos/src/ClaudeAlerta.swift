@@ -619,6 +619,9 @@ func fmtTokens(_ n: Int) -> String {
 
 struct GridUso: View {
     let dias: [String: (tokens: Int, respostas: Int)]
+    @State private var foco: Date? = nil      // dia sob o mouse
+    @State private var fixo: Date? = ProcessInfo.processInfo.environment["ALERTA_PNG_DIA"].flatMap { GridUso.chave.date(from: $0) }   // dia clicado: o balão fica até clicar de novo (ALERTA_PNG_DIA só para a captura)
+    static let longo: DateFormatter = { let f = DateFormatter(); f.locale = Locale(identifier: "pt_BR"); f.dateFormat = "EEEE, d 'de' MMMM"; return f }()
     let colunas = 39
     static let lado: CGFloat = 10, vao: CGFloat = 3
     static let chave: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f }()
@@ -651,8 +654,11 @@ struct GridUso: View {
                 numero(dias.values.reduce(0) { $0 + $1.tokens }, "total", destaque: true)
             }.padding(.top, 4).padding(.bottom, 12)
             meses(ini)
-            HStack(spacing: GridUso.vao) {
-                ForEach(0..<colunas, id: \.self) { c in coluna(ini, c, h, q) }
+            ZStack(alignment: .topLeading) {
+                HStack(spacing: GridUso.vao) {
+                    ForEach(0..<colunas, id: \.self) { c in coluna(ini, c, h, q) }
+                }
+                if let d = foco ?? fixo { balao(d, ini).zIndex(1) }
             }
             legenda.padding(.top, 2)
         }
@@ -700,15 +706,62 @@ struct GridUso: View {
         let t = v?.tokens ?? 0
         let n = t <= 0 ? 0 : (q.isEmpty ? 4 : 1 + q.filter { t > $0 }.count)
         let futuro = d > h
-        let dica: String = futuro ? "" : GridUso.dica.string(from: d) + " · " + (v.map { "\(fmtTokens($0.tokens)) tokens · \($0.respostas) respostas" } ?? "sem uso")
+        let ativo = !futuro && (d == foco || d == fixo)
         return RoundedRectangle(cornerRadius: 2.5)
             .fill(futuro ? Color.clear : GridUso.cor(n))
-            .overlay(RoundedRectangle(cornerRadius: 2.5).stroke(Color.white.opacity(d == h ? 0.55 : 0), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 2.5).stroke(Color.white.opacity(ativo ? 0.95 : (d == h ? 0.55 : 0)), lineWidth: ativo ? 1.5 : 1))
             .frame(width: GridUso.lado, height: GridUso.lado)
-            .help(dica)
+            .scaleEffect(ativo ? 1.3 : 1)
+            .animation(.easeOut(duration: 0.12), value: ativo)
+            .contentShape(Rectangle())
+            .onHover { dentro in
+                if futuro { return }
+                if dentro { foco = d; NSCursor.pointingHand.set() } else if foco == d { foco = nil; NSCursor.arrow.set() }
+            }
+            .onTapGesture { if !futuro { fixo = (fixo == d ? nil : d) } }
     }
+    // balão do dia: data, tokens, respostas e comparação com a média dos dias com uso
+    func balao(_ d: Date, _ ini: Date) -> some View {
+        let v = dias[GridUso.chave.string(from: d)]
+        let usados = dias.values.filter { $0.tokens > 0 }
+        let media = usados.isEmpty ? 0 : usados.reduce(0) { $0 + $1.tokens } / usados.count
+        let k = cal.dateComponents([.day], from: ini, to: d).day ?? 0
+        let c = k / 7, l = k % 7
+        let passo = GridUso.lado + GridUso.vao, largura: CGFloat = 210
+        let x = min(max(0, CGFloat(c) * passo + GridUso.lado / 2 - largura / 2), CGFloat(colunas) * passo - GridUso.vao - largura)
+        let y = l >= 3 ? CGFloat(l) * passo - 70 : CGFloat(l + 1) * passo + 4
+        var comp = ""
+        if let t = v?.tokens, t > 0, media > 0 {
+            let r = Double(t) / Double(media)
+            comp = r >= 1.05 ? String(format: "%.1f× a média", r).replacingOccurrences(of: ".", with: ",")
+                 : (r <= 0.95 ? "\(Int((r * 100).rounded()))% da média" : "na média")
+        }
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(GridUso.longo.string(from: d)).font(.system(size: 11)).foregroundColor(C.tx2)
+            if let v = v, v.tokens > 0 {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(fmtTokens(v.tokens) + " tokens").font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
+                    Spacer(minLength: 4)
+                    Text(comp).font(.system(size: 10.5)).foregroundColor(C.argila2)
+                }
+                Text("\(v.respostas) respostas").font(.system(size: 11)).foregroundColor(C.tx3)
+            } else {
+                Text("sem uso").font(.system(size: 13, weight: .semibold)).foregroundColor(C.tx2)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .frame(width: largura, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(0x2B2925)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(fixo == d ? 0.3 : 0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.5), radius: 8, y: 3)
+        .offset(x: x, y: y)
+        .allowsHitTesting(false)
+    }
+
     var legenda: some View {
         HStack(spacing: GridUso.vao) {
+            Text(fixo == nil ? "passe o mouse num dia · clique para fixar" : "clique de novo no dia para soltar")
+                .font(.system(size: 9.5)).foregroundColor(C.tx3)
             Spacer()
             Text("menos").font(.system(size: 9.5)).foregroundColor(C.tx3).padding(.trailing, 3)
             ForEach(0..<5, id: \.self) { n in

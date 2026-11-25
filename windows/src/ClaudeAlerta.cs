@@ -743,6 +743,41 @@ namespace ClaudeAlertaWin
                 Margin = new Thickness(0, 0, 3, 3) };
         }
 
+        DateTime? diaFixo;   // dia clicado no grid: o cartão do dia fica embaixo até clicar de novo
+
+        // cartão do dia: data, tokens, respostas e comparação com a média dos dias com uso
+        static FrameworkElement CartaoDia(DateTime d, long[] v, long media)
+        {
+            var pt = CultureInfo.GetCultureInfo("pt-BR");
+            var p = new StackPanel { MinWidth = 190 };
+            p.Children.Add(Ui.T(d.ToString("dddd, d 'de' MMMM", pt), 11, C.Tx2));
+            if (v != null && v[0] > 0)
+            {
+                var linha = new DockPanel { Margin = new Thickness(0, 3, 0, 2) };
+                string comp = "";
+                if (media > 0)
+                {
+                    var r = (double)v[0] / media;
+                    comp = r >= 1.05 ? r.ToString("0.0", pt) + "× a média" : (r <= 0.95 ? Math.Round(r * 100) + "% da média" : "na média");
+                }
+                var c = Ui.T(comp, 10.5, C.Argila2); c.Margin = new Thickness(10, 0, 0, 0); c.VerticalAlignment = VerticalAlignment.Bottom;
+                DockPanel.SetDock(c, Dock.Right);
+                linha.Children.Add(c);
+                linha.Children.Add(Ui.T(FmtTokens(v[0]) + " tokens", 14, Brushes.White, true));
+                p.Children.Add(linha);
+                p.Children.Add(Ui.T(v[1].ToString("N0", pt) + " respostas", 11, C.Tx3));
+            }
+            else p.Children.Add(Ui.T("sem uso", 13, C.Tx2, true));
+            return p;
+        }
+
+        static ToolTip Balao(FrameworkElement conteudo)
+        {
+            return new ToolTip { Content = conteudo, Background = new SolidColorBrush(Color.FromRgb(0x2B, 0x29, 0x25)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)), BorderThickness = new Thickness(1),
+                Padding = new Thickness(10, 8, 10, 8), HasDropShadow = true };
+        }
+
         FrameworkElement GridUso(Dictionary<string, long[]> dias)
         {
             const int colunas = 39;
@@ -750,6 +785,7 @@ namespace ClaudeAlertaWin
             var hoje = DateTime.Today;
             var inicio = hoje.AddDays(-(int)hoje.DayOfWeek).AddDays(-7 * (colunas - 1));
             var vals = dias.Values.Select(v => v[0]).Where(v => v > 0).OrderBy(v => v).ToList();
+            long media = vals.Count == 0 ? 0 : vals.Sum() / vals.Count;
             var q = vals.Count == 0 ? new List<long>() : new[] { 0.25, 0.5, 0.75 }.Select(f => vals[Math.Min(vals.Count - 1, (int)(vals.Count * f))]).ToList();
             Func<DateTime, long[]> de = d => { long[] v; return dias.TryGetValue(d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), out v) ? v : null; };
 
@@ -796,19 +832,42 @@ namespace ClaudeAlertaWin
                     var v = de(d);
                     long tk = v == null ? 0 : v[0];
                     int n = tk <= 0 ? 0 : (q.Count == 0 ? 4 : 1 + q.Count(x => tk > x));
-                    var b = Quadrado(d > hoje ? Brushes.Transparent : CorNivel(n), d == hoje);
-                    if (d <= hoje) b.ToolTip = d.ToString("ddd, d MMM", pt) + " · " + (v == null ? "sem uso" : FmtTokens(v[0]) + " tokens · " + v[1] + " respostas");
+                    var b = Quadrado(d > hoje ? Brushes.Transparent : CorNivel(n), d == hoje || d == diaFixo);
+                    if (d == diaFixo) { b.BorderBrush = Brushes.White; b.BorderThickness = new Thickness(1.5); }
+                    if (d <= hoje)
+                    {
+                        var dia = d; var borda = b.BorderBrush; var esp = b.BorderThickness;
+                        b.ToolTip = Balao(CartaoDia(d, v, media));
+                        ToolTipService.SetInitialShowDelay(b, 0);
+                        ToolTipService.SetPlacement(b, System.Windows.Controls.Primitives.PlacementMode.Top);
+                        b.Cursor = Cursors.Hand;
+                        b.MouseEnter += delegate { b.BorderBrush = Brushes.White; b.BorderThickness = new Thickness(1.5); };
+                        b.MouseLeave += delegate { b.BorderBrush = borda; b.BorderThickness = esp; };
+                        b.MouseLeftButtonUp += delegate { diaFixo = diaFixo == dia ? (DateTime?)null : dia; Desenhar(); };
+                    }
                     col.Children.Add(b);
                 }
                 grade.Children.Add(col);
             }
             raiz.Children.Add(grade);
 
-            var leg = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 3, 0, 0) };
+            var rodape = new DockPanel { Margin = new Thickness(0, 3, 0, 0) };
+            var leg = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top };
+            DockPanel.SetDock(leg, Dock.Right);
             var menos = Ui.T("menos", 9.5, C.Tx3); menos.Margin = new Thickness(0, 0, 6, 0); leg.Children.Add(menos);
             for (int n = 0; n < 5; n++) { var b = Quadrado(CorNivel(n), false); b.Margin = new Thickness(0, 0, 3, 0); leg.Children.Add(b); }
             var mais = Ui.T("mais", 9.5, C.Tx3); mais.Margin = new Thickness(3, 0, 0, 0); leg.Children.Add(mais);
-            raiz.Children.Add(leg);
+            rodape.Children.Add(leg);
+            rodape.Children.Add(Ui.T(diaFixo == null ? "passe o mouse num dia · clique para fixar" : "clique de novo no dia para soltar", 9.5, C.Tx3));
+            raiz.Children.Add(rodape);
+            if (diaFixo != null)
+            {
+                var cd = new Border { Background = new SolidColorBrush(Color.FromRgb(0x2B, 0x29, 0x25)), CornerRadius = new CornerRadius(8),
+                    BorderBrush = new SolidColorBrush(Color.FromArgb(77, 255, 255, 255)), BorderThickness = new Thickness(1),
+                    Padding = new Thickness(10, 8, 10, 8), Margin = new Thickness(0, 8, 0, 0),
+                    Child = CartaoDia(diaFixo.Value, de(diaFixo.Value), media) };
+                raiz.Children.Add(cd);
+            }
             return raiz;
         }
 

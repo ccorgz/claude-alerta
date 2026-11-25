@@ -88,7 +88,7 @@ Para conferir o uso na hora:
 | Pedidos de threads na nuvem | cartões "Allow Claude…" lidos na janela do app Claude pela UI Automation do Windows | a cada 3 s |
 | Sessões ativas | `%USERPROFILE%\.claude\sessions\*.json` (só processo vivo); título em `%APPDATA%\Claude\claude-code-sessions\`; segundo plano pelos processos do Bash do Claude (`shell-snapshots`), via WMI | a cada 3 s |
 | Uso 5h / semana | `%USERPROFILE%\.claude-alerta\uso.json`, escrito por `alerta.exe uso` | o app relê a cada 5 s; os hooks renovam o arquivo no máximo a cada 2 min e, se nenhuma sessão local rodar, o próprio app pede leitura nova quando ela passa de 3 min |
-| Uso por dia (grid) | `%USERPROFILE%\.claude-alerta\atividade.json`, escrito por `alerta.exe atividade` a partir do histórico local `%USERPROFILE%\.claude\projects` | o app pede a cada 5 min; só lê o que cresceu desde a última vez. Conta tokens de entrada, saída e cache criado (leitura de cache não entra), só das sessões locais |
+| Uso por dia (grid) | `%USERPROFILE%\.claude-alerta\atividade.json`, escrito por `alerta.exe atividade` a partir do histórico local `%USERPROFILE%\.claude\projects` | o app pede a cada 5 min; só lê o que cresceu desde a última vez. Conta tokens de entrada, saída e cache criado (leitura de cache não entra), só das sessões locais. Passando o mouse num dia aparece a data, os tokens, as respostas e a comparação com a média; clicar fixa o dia |
 
 ### Threads na nuvem
 

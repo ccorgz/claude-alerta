@@ -424,7 +424,7 @@ namespace ClaudeAlertaWin
         }
 
         // Cartão de pedido: o mesmo no aviso e no painel aberto
-        public static FrameworkElement CartaoPedido(Pendencia p, Action<string> abrir, Action fechar)
+        public static FrameworkElement CartaoPedido(Pendencia p, Action<string> abrir, Action fechar, string dica = "Esconder até o próximo pedido")
         {
             var linha = new DockPanel { LastChildFill = true };
             if (fechar != null)
@@ -432,7 +432,7 @@ namespace ClaudeAlertaWin
                 var x = new Border { Width = 24, Height = 24, CornerRadius = new CornerRadius(6), Background = C.Transparente, Margin = new Thickness(6, 0, 0, 0) };
                 x.Child = new TextBlock { Text = "✕", FontSize = 11.5, FontWeight = FontWeights.Bold, Foreground = C.Tx2, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
                 Hover(x, C.B(0x1AFFFFFF), C.Transparente);
-                x.ToolTip = "Esconder até o próximo pedido";
+                x.ToolTip = dica;
                 x.MouseLeftButtonUp += delegate { fechar(); };
                 DockPanel.SetDock(x, Dock.Right);
                 linha.Children.Add(x);
@@ -730,11 +730,18 @@ namespace ClaudeAlertaWin
 
             if (ctl.Pendencias.Count > 0)
             {
-                p.Children.Add(Rotulo("Precisa de você", ctl.Pendencias.Count));
+                var cab = (DockPanel)Rotulo("Precisa de você", ctl.Pendencias.Count);
+                var todos = new TextBlock { Text = "Fechar todos", FontSize = 12, FontFamily = C.Fonte, Foreground = C.Tx2, Margin = new Thickness(10, 0, 0, 0), Cursor = Cursors.Hand, ToolTip = "Fecha todos os pedidos sem abrir as conversas" };
+                todos.MouseEnter += delegate { todos.Foreground = Brushes.White; };
+                todos.MouseLeave += delegate { todos.Foreground = C.Tx2; };
+                todos.MouseLeftButtonUp += delegate { ctl.DescartarTodas(); };
+                DockPanel.SetDock(todos, Dock.Right);
+                cab.Children.Insert(0, todos);
+                p.Children.Add(cab);
                 foreach (var x in ctl.Pendencias.Take(4))
                 {
                     var pedido = x;
-                    var c = Ui.CartaoPedido(x, link => ctl.AbrirPedido(pedido), null);
+                    var c = Ui.CartaoPedido(x, link => ctl.AbrirPedido(pedido), () => ctl.Descartar(pedido), "Fechar este pedido sem abrir a conversa");
                     c.Margin = new Thickness(0, 0, 0, 8);
                     p.Children.Add(c);
                 }
@@ -1189,6 +1196,10 @@ namespace ClaudeAlertaWin
         }
 
         // tira o pedido da tela na hora e do arquivo pelo próprio `alerta fechar`
+        // ✕ do painel e "Fechar todos": fecham sem abrir a conversa
+        public void Descartar(Pendencia p) { Resolver(p); }
+        public void DescartarTodas() { foreach (var p in Pendencias.ToList()) Resolver(p); }
+
         void Resolver(Pendencia p)
         {
             Pendencias.RemoveAll(x => x.Id == p.Id);

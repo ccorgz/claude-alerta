@@ -405,6 +405,8 @@ final class Estado: ObservableObject {
     // ✕ num cartão do aviso esconde só aquele pedido (continua no painel e no contador)
     @Published var escondidos = Set<String>()
     var esconderAviso: (String) -> Void = { _ in }
+    var descartar: (Pendencia) -> Void = { _ in }      // ✕ do painel: fecha sem abrir a conversa
+    var descartarTodas: () -> Void = {}
     var noAviso: [Pendencia] { pendencias.filter { !escondidos.contains($0.id) } }
 
     func esperando(_ s: Sessao) -> Bool { s.aguardando || pendencias.contains { ($0.link ?? "").contains(s.id) } }
@@ -455,7 +457,8 @@ struct BotaoTexto: ButtonStyle {
 struct CartaoPedido: View {
     let p: Pendencia
     var abrir: (String) -> Void
-    var fechar: (() -> Void)? = nil      // com ✕ = cartão sozinho (aviso): é a própria janela
+    var fechar: (() -> Void)? = nil      // ✕: no aviso esconde o cartão; no painel fecha o pedido
+    var dica = "Esconder até o próximo pedido"
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
@@ -474,7 +477,7 @@ struct CartaoPedido: View {
                 Button(action: fechar) {
                     Image(systemName: "xmark").font(.system(size: 10.5, weight: .bold)).frame(width: 26, height: 26)
                         .contentShape(Rectangle())
-                }.buttonStyle(BotaoTexto()).hover(Color.white.opacity(0.1), raio: 6).help("Esconder até o próximo pedido")
+                }.buttonStyle(BotaoTexto()).hover(Color.white.opacity(0.1), raio: 6).help(dica)
             }
         }
         .padding(.leading, 18).padding(.trailing, 12).padding(.vertical, 13)
@@ -605,8 +608,15 @@ struct Painel: View {
             .background(cartao())
 
             if !e.pendencias.isEmpty {
-                rotulo("Precisa de você", e.pendencias.count)
-                VStack(spacing: 8) { ForEach(e.pendencias.prefix(4)) { p in CartaoPedido(p: p, abrir: { _ in e.abrirPedido(p) }) } }
+                HStack(spacing: 10) {
+                    Text("Precisa de você"); Spacer(); Text("\(e.pendencias.count)")
+                    Button(action: { e.descartarTodas() }) { Text("Fechar todos") }.buttonStyle(BotaoTexto())
+                        .help("Fecha todos os pedidos sem abrir as conversas")
+                }.font(.system(size: 12)).foregroundColor(C.tx2)
+                    .padding(.top, 16).padding(.bottom, 8).padding(.horizontal, 2)
+                VStack(spacing: 8) { ForEach(e.pendencias.prefix(4)) { p in
+                    CartaoPedido(p: p, abrir: { _ in e.abrirPedido(p) }, fechar: { e.descartar(p) }, dica: "Fechar este pedido sem abrir a conversa")
+                } }
             }
 
             rotulo("Sessões ativas", e.ativas.count)
@@ -738,6 +748,8 @@ final class App: NSObject, NSApplicationDelegate {
         e.abrir = { [weak self] l in self?.abrirLink(l) }
         e.abrirPedido = { [weak self] p in self?.resolver(p); self?.abrirLink(p.link ?? "") }
         e.alternar = { [weak self] in self?.alternar() }
+        e.descartar = { [weak self] p in self?.resolver(p) }
+        e.descartarTodas = { [weak self] in guard let s = self else { return }; for p in s.e.pendencias { s.resolver(p) } }
         e.esconderAviso = { [weak self] id in self?.e.escondidos.insert(id); self?.atualizarAviso(); self?.ajustarAltura() }
 
         janela = JanelaIlha(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)

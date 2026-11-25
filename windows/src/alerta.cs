@@ -7,6 +7,7 @@
 //   alerta limpar-sessao <nome>
 //   alerta listar
 //   alerta uso            lê o uso do plano (5h e semana) e grava em %USERPROFILE%\.claude-alerta\uso.json
+//   alerta atividade      soma os tokens de cada dia no histórico local (.claude\projects) e grava atividade.json
 //   alerta hook           usado pelos hooks do Claude Code (lê o JSON do evento na entrada padrão)
 //   alerta hooks ligar|desligar   liga ou tira os hooks em %USERPROFILE%\.claude\settings.json
 
@@ -189,6 +190,7 @@ namespace ClaudeAlertaCli
                     return 0;                       // nunca atrapalhar a sessão
                 }
                 if (cmd == "uso") return AtualizarUso();
+                if (cmd == "atividade") return AtualizarAtividade();
                 if (cmd == "hooks") return Hooks(args.Length > 1 ? args[1] : "");
                 if (cmd == "abrir") return Abrir(args);
                 if (cmd == "fechar")
@@ -648,6 +650,115 @@ namespace ClaudeAlertaCli
             if (DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out d))
                 return (d - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
             return null;
+        }
+
+        // Grid de uso por dia: tokens (entrada + saída + cache criado; leitura de cache não conta) e respostas.
+        // Lê só o que cresceu em cada transcrição desde a última vez (posição guardada em .atividade-pos.json).
+        static long N(Dictionary<string, object> d, string k)
+        {
+            object v;
+            if (d == null || !d.TryGetValue(k, out v) || v == null) return 0;
+            try { return Convert.ToInt64(v, CultureInfo.InvariantCulture); } catch { return 0; }
+        }
+
+        static int AtualizarAtividade()
+        {
+            var raiz = System.IO.Path.Combine(Home, ".claude", "projects");
+            var arqPos = System.IO.Path.Combine(Pasta, ".atividade-pos.json");
+            var estado = Json.Obj(Json.LerArquivo(arqPos));
+            if (estado == null || Json.Num(estado, "versao", 0) != 1)
+            {
+                estado = new Dictionary<string, object>();
+                estado["versao"] = 1;
+                estado["arquivos"] = new Dictionary<string, object>();
+                estado["dias"] = new Dictionary<string, object>();
+            }
+            var arqs = Json.Obj(estado["arquivos"]);
+            var diasJ = Json.Obj(estado["dias"]);
+            var dias = new Dictionary<string, long[]>();
+            foreach (var kv in diasJ)
+            {
+                var l = Json.Lista(kv.Value);
+                if (l.Count == 2) dias[kv.Key] = new[] { Convert.ToInt64(l[0]), Convert.ToInt64(l[1]) };
+            }
+            string[] todos = new string[0];
+            try { if (Directory.Exists(raiz)) todos = Directory.GetFiles(raiz, "*.jsonl", SearchOption.AllDirectories); } catch { }
+            foreach (var f in todos)
+            {
+                long tam;
+                try { tam = new FileInfo(f).Length; } catch { continue; }
+                var info = arqs.ContainsKey(f) ? Json.Obj(arqs[f]) : null;
+                long pos = info == null ? 0 : N(info, "pos");
+                var vistos = new HashSet<string>(info == null ? new List<string>() : Json.Lista(info["ids"]).Select(x => Convert.ToString(x)));
+                var ordem = new List<string>(vistos);
+                if (tam < pos) { pos = 0; vistos.Clear(); ordem.Clear(); }
+                if (tam == pos) continue;
+                try
+                {
+                    using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    {
+                        fs.Seek(pos, SeekOrigin.Begin);
+                        var buf = new byte[4 << 20];
+                        var resto = new MemoryStream();
+                        int lidos;
+                        while ((lidos = fs.Read(buf, 0, buf.Length)) > 0)
+                        {
+                            int ini = 0;
+                            for (int i = 0; i < lidos; i++)
+                            {
+                                if (buf[i] != (byte)'\n') continue;
+                                resto.Write(buf, ini, i - ini + 1);
+                                var bytes = resto.ToArray();
+                                resto.SetLength(0);
+                                ini = i + 1;
+                                pos += bytes.Length;
+                                var linha = Encoding.UTF8.GetString(bytes);
+                                if (linha.IndexOf("\"assistant\"", StringComparison.Ordinal) < 0 || linha.IndexOf("\"usage\"", StringComparison.Ordinal) < 0) continue;
+                                Dictionary<string, object> j;
+                                try { j = Json.Obj(Json.Ler(linha)); } catch { continue; }
+                                if (j == null || Json.Str(j, "type") != "assistant") continue;
+                                var m = j.ContainsKey("message") ? Json.Obj(j["message"]) : null;
+                                var u = m != null && m.ContainsKey("usage") ? Json.Obj(m["usage"]) : null;
+                                if (u == null) continue;
+                                var mid = Json.Str(m, "id");
+                                if (mid == "") mid = Json.Str(j, "uuid");
+                                if (vistos.Contains(mid)) continue;
+                                vistos.Add(mid); ordem.Add(mid);
+                                DateTime t;
+                                if (!DateTime.TryParse(Json.Str(j, "timestamp"), CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out t)) continue;
+                                var dia = t.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                                long[] d;
+                                if (!dias.TryGetValue(dia, out d)) dias[dia] = d = new long[2];
+                                d[0] += N(u, "input_tokens") + N(u, "output_tokens") + N(u, "cache_creation_input_tokens");
+                                d[1] += 1;
+                            }
+                            resto.Write(buf, ini, lidos - ini);   // linha ainda sendo escrita: fica para a próxima
+                        }
+                    }
+                }
+                catch { continue; }
+                var novo = new Dictionary<string, object>();
+                novo["pos"] = pos;
+                novo["ids"] = ordem.Skip(Math.Max(0, ordem.Count - 50)).ToList();   // o mesmo id se repete em linhas seguidas
+                arqs[f] = novo;
+            }
+            var dj = new Dictionary<string, object>();
+            var saida = new Dictionary<string, object>();
+            foreach (var kv in dias)
+            {
+                dj[kv.Key] = new List<object> { kv.Value[0], kv.Value[1] };
+                var o = new Dictionary<string, object>();
+                o["tokens"] = kv.Value[0]; o["respostas"] = kv.Value[1];
+                saida[kv.Key] = o;
+            }
+            estado["dias"] = dj;
+            Directory.CreateDirectory(Pasta);
+            Json.GravarAtomico(arqPos, Json.Escrever(estado));
+            var fim = new Dictionary<string, object>();
+            fim["dias"] = saida;
+            fim["lido"] = (DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+            Json.GravarAtomico(System.IO.Path.Combine(Pasta, "atividade.json"), Json.Escrever(fim));
+            return 0;
         }
 
         static int AtualizarUso()

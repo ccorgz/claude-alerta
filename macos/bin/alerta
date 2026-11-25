@@ -9,11 +9,12 @@ Uso manual (pela sessão):
   alerta limpar-sessao <nome>
   alerta listar
   alerta uso         -> lê o uso do plano (sessão de 5h e semana) e grava em ~/.claude-alerta/uso.json
+  alerta atividade   -> soma os tokens de cada dia no histórico local (~/.claude/projects) e grava atividade.json
 
 Uso pelos hooks do Claude Code (lê o JSON do evento na entrada padrão):
   alerta hook    -> Notification e PreToolUse(AskUserQuestion/ExitPlanMode) abrem; resposta sua na sessão
-                    (UserPromptSubmit, ou PostToolUse de AskUserQuestion/ExitPlanMode) fecha todos os pedidos dela,
-                    inclusive os manuais; PostToolUse comum fecha só o automático; SessionEnd fecha todos
+                    (UserPromptSubmit, ou PostToolUse de AskUserQuestion/ExitPlanMode) fecha os pedidos dela que eram
+                    pergunta; PostToolUse comum fecha só o automático; SessionEnd fecha todos
 """
 import fcntl, json, os, re, shutil, subprocess, sys, time, uuid, argparse
 
@@ -159,6 +160,69 @@ def _iso_para_epoch(s):
         return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
     except Exception:
         return None
+
+ARQ_ATIVIDADE = os.path.join(PASTA, "atividade.json")
+
+def atualizar_atividade():
+    """Grid de uso por dia: tokens (entrada + saída + cache criado; leitura de cache não conta) e respostas.
+    Lê só o que cresceu em cada transcrição desde a última vez (posição guardada em .atividade-pos.json)."""
+    import glob
+    from datetime import datetime
+    raiz = os.path.expanduser("~/.claude/projects")
+    arq_pos = os.path.join(PASTA, ".atividade-pos.json")
+    try:
+        estado = json.load(open(arq_pos))
+    except Exception:
+        estado = {}
+    if estado.get("versao") != 1:
+        estado = {"versao": 1, "arquivos": {}, "dias": {}}
+    arqs, dias = estado["arquivos"], estado["dias"]
+    for f in glob.glob(os.path.join(raiz, "**", "*.jsonl"), recursive=True):
+        try:
+            tam = os.path.getsize(f)
+        except OSError:
+            continue
+        info = arqs.get(f) or {"pos": 0, "ids": []}
+        if tam < info["pos"]:
+            info = {"pos": 0, "ids": []}
+        if tam == info["pos"]:
+            continue
+        vistos = set(info["ids"])
+        try:
+            with open(f, "rb") as h:
+                h.seek(info["pos"])
+                for linha in h:
+                    if not linha.endswith(b"\n"):
+                        break                      # linha ainda sendo escrita: fica para a próxima
+                    info["pos"] += len(linha)
+                    if b'"assistant"' not in linha or b'"usage"' not in linha:
+                        continue
+                    try:
+                        j = json.loads(linha)
+                    except Exception:
+                        continue
+                    m = j.get("message") or {}
+                    u = m.get("usage") or {}
+                    mid = m.get("id") or j.get("uuid")
+                    if j.get("type") != "assistant" or not u or mid in vistos:
+                        continue
+                    vistos.add(mid)
+                    try:
+                        dia = datetime.fromisoformat(j["timestamp"].replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
+                    except Exception:
+                        continue
+                    t = sum(int(u.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))
+                    d = dias.setdefault(dia, [0, 0])
+                    d[0] += t; d[1] += 1
+        except OSError:
+            continue
+        info["ids"] = list(vistos)[-50:]     # o mesmo id se repete em linhas seguidas (um bloco por linha)
+        arqs[f] = info
+    for tmp, dado in ((arq_pos, estado), (ARQ_ATIVIDADE, {"dias": {k: {"tokens": v[0], "respostas": v[1]} for k, v in dias.items()}, "lido": time.time()})):
+        with open(tmp + ".tmp", "w") as h:
+            json.dump(dado, h)
+        os.replace(tmp + ".tmp", tmp)
+    return 0
 
 def atualizar_uso():
     exe = executavel_claude()
@@ -346,6 +410,8 @@ def hook():
         mexer(lambda d: ([p for p in d if p.get("sessao_id") != sid], None))
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "atividade":
+        sys.exit(atualizar_atividade())
     if len(sys.argv) > 1 and sys.argv[1] == "uso":
         sys.exit(atualizar_uso())
     if len(sys.argv) > 1 and sys.argv[1] == "hook":

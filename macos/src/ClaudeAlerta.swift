@@ -320,6 +320,27 @@ func pedirLeituraUso(_ lido: Date?) {
     try? p.run()
 }
 
+// Uso por dia: `alerta atividade` lê só o que cresceu no histórico local; o app pede a cada 5 min e lê o resultado
+let arqAtividade = (pastaAlerta as NSString).appendingPathComponent("atividade.json")
+var ultimoPedidoAtividade = Date.distantPast
+func lerAtividade() -> [String: (tokens: Int, respostas: Int)] {
+    if Date().timeIntervalSince(ultimoPedidoAtividade) >= 300 {
+        ultimoPedidoAtividade = Date()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: (pastaAlerta as NSString).appendingPathComponent("bin/alerta"))
+        p.arguments = ["atividade"]
+        p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        p.qualityOfService = .background
+        try? p.run()
+    }
+    guard let d = FileManager.default.contents(atPath: arqAtividade),
+          let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+          let dias = j["dias"] as? [String: [String: Any]] else { return [:] }
+    var r: [String: (tokens: Int, respostas: Int)] = [:]
+    for (k, v) in dias { r[k] = ((v["tokens"] as? Int) ?? 0, (v["respostas"] as? Int) ?? 0) }
+    return r
+}
+
 func buscarUso(_ fim: @escaping (Uso?, String?) -> Void) {
     let lidoAntes = FileManager.default.contents(atPath: arqUso)
         .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
@@ -388,6 +409,7 @@ final class Estado: ObservableObject {
     @Published var pendencias: [Pendencia] = []
     @Published var sessoes: [Sessao] = []
     @Published var uso: Uso? = nil
+    @Published var atividade: [String: (tokens: Int, respostas: Int)] = [:]   // ~/.claude-alerta/atividade.json
     @Published var erroUso: String? = nil
     @Published var aberto = false
     @Published var aviso = false      // pedidos à mostra sob a ilha (Claude fora da frente)
@@ -585,6 +607,118 @@ struct Compacto: View {
     }
 }
 
+// Grid de uso por dia (como o de contribuições do GitHub): uma coluna por semana, domingo em cima.
+// Cor pela quantidade de tokens do dia, em 4 faixas pelos quartis dos dias com uso.
+func fmtTokens(_ n: Int) -> String {
+    let d = Double(n)
+    if d >= 1e9 { return String(format: "%.1f bi", d / 1e9).replacingOccurrences(of: ".", with: ",") }
+    if d >= 1e6 { return String(format: "%.1f mi", d / 1e6).replacingOccurrences(of: ".", with: ",") }
+    if d >= 1e3 { return "\(Int(d / 1e3)) mil" }
+    return "\(n)"
+}
+
+struct GridUso: View {
+    let dias: [String: (tokens: Int, respostas: Int)]
+    let colunas = 39
+    static let lado: CGFloat = 10, vao: CGFloat = 3
+    static let chave: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f }()
+    static let dica: DateFormatter = { let f = DateFormatter(); f.locale = Locale(identifier: "pt_BR"); f.dateFormat = "EEE, d MMM"; return f }()
+    static let mes: DateFormatter = { let f = DateFormatter(); f.locale = Locale(identifier: "pt_BR"); f.dateFormat = "MMM"; return f }()
+    static func cor(_ n: Int) -> Color { n == 0 ? C.trilho : C.argila.opacity([0, 0.35, 0.55, 0.78, 1][n]) }
+
+    var cal: Calendar { Calendar.current }
+    var hoje: Date { cal.startOfDay(for: Date()) }
+    var inicio: Date {
+        let semana = cal.date(byAdding: .day, value: 1 - cal.component(.weekday, from: hoje), to: hoje)!
+        return cal.date(byAdding: .day, value: -7 * (colunas - 1), to: semana)!
+    }
+    var quartis: [Int] {
+        let v = dias.values.map { $0.tokens }.filter { $0 > 0 }.sorted()
+        if v.isEmpty { return [] }
+        return [0.25, 0.5, 0.75].map { v[min(v.count - 1, Int(Double(v.count) * $0))] }
+    }
+    func data(_ ini: Date, _ c: Int, _ l: Int) -> Date { cal.date(byAdding: .day, value: c * 7 + l, to: ini)! }
+    func tokens(_ d: Date) -> Int { dias[GridUso.chave.string(from: d)]?.tokens ?? 0 }
+
+    var body: some View {
+        let ini = inicio, h = hoje, q = quartis
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Tokens").font(.system(size: 13)).foregroundColor(C.tx)
+            HStack(spacing: 0) {
+                numero(somaDias(1, h), "hoje")
+                numero(somaDias(7, h), "7 dias")
+                numero(somaDias(30, h), "30 dias")
+                numero(dias.values.reduce(0) { $0 + $1.tokens }, "total", destaque: true)
+            }.padding(.top, 4).padding(.bottom, 12)
+            meses(ini)
+            HStack(spacing: GridUso.vao) {
+                ForEach(0..<colunas, id: \.self) { c in coluna(ini, c, h, q) }
+            }
+            legenda.padding(.top, 2)
+        }
+    }
+
+    func somaDias(_ n: Int, _ h: Date) -> Int {
+        (0..<n).reduce(0) { $0 + tokens(cal.date(byAdding: .day, value: -$1, to: h)!) }
+    }
+    // número grande com a unidade pequena ao lado ("569,6 mi"), rótulo embaixo
+    func numero(_ v: Int, _ rotulo: String, destaque: Bool = false) -> some View {
+        let t = fmtTokens(v)
+        let partes = t.split(separator: " ", maxSplits: 1).map(String.init)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(partes[0]).font(.system(size: 20, weight: .semibold).monospacedDigit())
+                    .foregroundColor(destaque ? C.argila2 : C.tx)
+                if partes.count > 1 { Text(partes[1]).font(.system(size: 12, weight: .medium)).foregroundColor(C.tx2) }
+            }
+            Text(rotulo).font(.system(size: 11)).foregroundColor(C.tx3)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    func meses(_ ini: Date) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear.frame(height: 12)
+            ForEach(0..<colunas, id: \.self) { c in rotuloMes(ini, c) }
+        }
+    }
+    @ViewBuilder func rotuloMes(_ ini: Date, _ c: Int) -> some View {
+        let d = data(ini, c, 0)
+        let virou = c == 0 || cal.component(.month, from: d) != cal.component(.month, from: data(ini, c - 1, 0))
+        if virou && c < colunas - 2 {
+            Text(GridUso.mes.string(from: d).replacingOccurrences(of: ".", with: ""))
+                .font(.system(size: 9.5)).foregroundColor(C.tx3).fixedSize()
+                .offset(x: CGFloat(c) * (GridUso.lado + GridUso.vao))
+        }
+    }
+    func coluna(_ ini: Date, _ c: Int, _ h: Date, _ q: [Int]) -> some View {
+        VStack(spacing: GridUso.vao) {
+            ForEach(0..<7, id: \.self) { l in celula(data(ini, c, l), h, q) }
+        }
+    }
+    func celula(_ d: Date, _ h: Date, _ q: [Int]) -> some View {
+        let v = dias[GridUso.chave.string(from: d)]
+        let t = v?.tokens ?? 0
+        let n = t <= 0 ? 0 : (q.isEmpty ? 4 : 1 + q.filter { t > $0 }.count)
+        let futuro = d > h
+        let dica: String = futuro ? "" : GridUso.dica.string(from: d) + " · " + (v.map { "\(fmtTokens($0.tokens)) tokens · \($0.respostas) respostas" } ?? "sem uso")
+        return RoundedRectangle(cornerRadius: 2.5)
+            .fill(futuro ? Color.clear : GridUso.cor(n))
+            .overlay(RoundedRectangle(cornerRadius: 2.5).stroke(Color.white.opacity(d == h ? 0.55 : 0), lineWidth: 1))
+            .frame(width: GridUso.lado, height: GridUso.lado)
+            .help(dica)
+    }
+    var legenda: some View {
+        HStack(spacing: GridUso.vao) {
+            Spacer()
+            Text("menos").font(.system(size: 9.5)).foregroundColor(C.tx3).padding(.trailing, 3)
+            ForEach(0..<5, id: \.self) { n in
+                RoundedRectangle(cornerRadius: 2.5).fill(GridUso.cor(n)).frame(width: GridUso.lado, height: GridUso.lado)
+            }
+            Text("mais").font(.system(size: 9.5)).foregroundColor(C.tx3).padding(.leading, 3)
+        }
+    }
+}
+
 struct Painel: View {
     @ObservedObject var e: Estado
     var body: some View {
@@ -606,6 +740,12 @@ struct Painel: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 14)
             .background(cartao())
+
+            if !e.atividade.isEmpty {
+                GridUso(dias: e.atividade)
+                    .padding(.horizontal, 16).padding(.vertical, 14)
+                    .background(cartao()).padding(.top, 10)
+            }
 
             if !e.pendencias.isEmpty {
                 HStack(spacing: 10) {
@@ -943,6 +1083,8 @@ final class App: NSObject, NSApplicationDelegate {
         buscarUso { u, erro in
             DispatchQueue.main.async {
                 if let u = u { self.e.uso = u; self.e.erroUso = nil } else if self.e.uso == nil { self.e.erroUso = erro }
+                let a = lerAtividade()
+                if a.count != self.e.atividade.count || a.values.map({ $0.tokens }).reduce(0, +) != self.e.atividade.values.map({ $0.tokens }).reduce(0, +) { self.e.atividade = a }
                 self.ajustarAltura()
             }
         }

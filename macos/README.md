@@ -89,6 +89,7 @@ Fora de uma sessão do Claude Code, esse comando só funciona se o `claude` esti
 | Pedidos de threads na nuvem | `~/.claude-alerta/tela.json`, escrito por `alerta-tela` (cartões "Allow Claude…" na janela do Claude) | a cada 3 s |
 | Sessões ativas | `~/.claude/sessions/*.json`, que o próprio Claude Code mantém (só conta processo vivo); título em `~/Library/Application Support/Claude/claude-code-sessions/` | a cada 3 s |
 | Uso 5h / semana | `~/.claude-alerta/uso.json`, escrito por `alerta uso` | o app relê a cada 5 s; os hooks renovam o arquivo no máximo a cada 2 min e, se nenhuma sessão local rodar, o próprio app pede leitura nova quando ela passa de 3 min |
+| Uso por dia (grid) | `~/.claude-alerta/atividade.json`, escrito por `alerta atividade` a partir do histórico local `~/.claude/projects` | o app pede a cada 5 min; só lê o que cresceu desde a última vez. Conta tokens de entrada, saída e cache criado (leitura de cache não entra), só das sessões locais |
 
 ### Como o uso é lido (e por que não pede senha)
 
@@ -118,6 +119,7 @@ sessão do Claude Code (Desktop ou terminal)
 | `alerta limpar-sessao <nome>` | Fecha todos os pedidos de uma sessão |
 | `alerta listar` | Lista os pedidos abertos |
 | `alerta uso` | Lê o uso do plano e grava em `~/.claude-alerta/uso.json` |
+| `alerta atividade` | Soma os tokens de cada dia no histórico local e grava em `atividade.json` (grid do painel) |
 | `alerta hook` | Usado pelos hooks: lê o evento do Claude Code na entrada padrão |
 
 Os pedidos abertos dentro de uma sessão da aba Code do app ganham sozinhos o link `claude://code/continue?session=local_…`, que leva direto àquela conversa. Em thread de projeto, o link abre o projeto com a thread ao lado.

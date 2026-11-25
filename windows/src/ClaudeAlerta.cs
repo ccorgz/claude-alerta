@@ -112,6 +112,21 @@ namespace ClaudeAlertaWin
             return j;
         }
 
+        // uso por dia (atividade.json, gravado por `alerta.exe atividade`): dia -> {tokens, respostas}
+        public static Dictionary<string, long[]> LerAtividade()
+        {
+            var r = new Dictionary<string, long[]>();
+            var d = Obj(Ler(IOPath.Combine(Pasta, "atividade.json")));
+            var dias = d == null || !d.ContainsKey("dias") ? null : Obj(d["dias"]);
+            if (dias == null) return r;
+            foreach (var kv in dias)
+            {
+                var v = Obj(kv.Value);
+                if (v != null) r[kv.Key] = new[] { (long)(Num(v, "tokens") ?? 0), (long)(Num(v, "respostas") ?? 0) };
+            }
+            return r;
+        }
+
         public static Uso LerUso()
         {
             var d = Obj(Ler(ArqUso));
@@ -702,6 +717,101 @@ namespace ClaudeAlertaWin
             return b;
         }
 
+        // Grid de uso por dia (como o de contribuições do GitHub): uma coluna por semana, domingo em cima.
+        // Cor pela quantidade de tokens do dia, em 4 faixas pelos quartis dos dias com uso.
+        static string FmtTokens(long n)
+        {
+            var pt = CultureInfo.GetCultureInfo("pt-BR");
+            if (n >= 1000000000) return (n / 1e9).ToString("0.0", pt) + " bi";
+            if (n >= 1000000) return (n / 1e6).ToString("0.0", pt) + " mi";
+            if (n >= 1000) return (n / 1000) + " mil";
+            return n.ToString();
+        }
+
+        static Brush CorNivel(int n)
+        {
+            if (n == 0) return C.Trilho;
+            var a = new[] { 0, 0.35, 0.55, 0.78, 1.0 }[n];
+            var c = C.Argila.Color;
+            return new SolidColorBrush(Color.FromArgb((byte)(a * 255), c.R, c.G, c.B));
+        }
+
+        static Border Quadrado(Brush cor, bool hoje)
+        {
+            return new Border { Width = 10, Height = 10, CornerRadius = new CornerRadius(2.5), Background = cor,
+                BorderBrush = hoje ? new SolidColorBrush(Color.FromArgb(140, 255, 255, 255)) : null, BorderThickness = new Thickness(hoje ? 1 : 0),
+                Margin = new Thickness(0, 0, 3, 3) };
+        }
+
+        FrameworkElement GridUso(Dictionary<string, long[]> dias)
+        {
+            const int colunas = 39;
+            var pt = CultureInfo.GetCultureInfo("pt-BR");
+            var hoje = DateTime.Today;
+            var inicio = hoje.AddDays(-(int)hoje.DayOfWeek).AddDays(-7 * (colunas - 1));
+            var vals = dias.Values.Select(v => v[0]).Where(v => v > 0).OrderBy(v => v).ToList();
+            var q = vals.Count == 0 ? new List<long>() : new[] { 0.25, 0.5, 0.75 }.Select(f => vals[Math.Min(vals.Count - 1, (int)(vals.Count * f))]).ToList();
+            Func<DateTime, long[]> de = d => { long[] v; return dias.TryGetValue(d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), out v) ? v : null; };
+
+            var raiz = new StackPanel();
+            Func<int, long> soma = n => Enumerable.Range(0, n).Select(k => de(hoje.AddDays(-k))).Where(v => v != null).Sum(v => v[0]);
+            raiz.Children.Add(Ui.T("Tokens", 13, C.Tx));
+            var nums = new Grid { Margin = new Thickness(0, 6, 0, 12) };
+            var itens = new[] { Tuple.Create(soma(1), "hoje"), Tuple.Create(soma(7), "7 dias"), Tuple.Create(soma(30), "30 dias"), Tuple.Create(dias.Values.Sum(v => v[0]), "total") };
+            for (int k = 0; k < itens.Length; k++)
+            {
+                nums.ColumnDefinitions.Add(new ColumnDefinition());
+                var partes = FmtTokens(itens[k].Item1).Split(new[] { ' ' }, 2);
+                var linha = new TextBlock { FontFamily = C.Fonte };
+                linha.Inlines.Add(new System.Windows.Documents.Run(partes[0]) { FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = k == 3 ? C.Argila2 : C.Tx });
+                if (partes.Length > 1) linha.Inlines.Add(new System.Windows.Documents.Run(" " + partes[1]) { FontSize = 12, FontWeight = FontWeights.Medium, Foreground = C.Tx2 });
+                var bloco = new StackPanel();
+                bloco.Children.Add(linha);
+                bloco.Children.Add(Ui.T(itens[k].Item2, 11, C.Tx3));
+                Grid.SetColumn(bloco, k);
+                nums.Children.Add(bloco);
+            }
+            raiz.Children.Add(nums);
+
+            var meses = new Canvas { Height = 14 };
+            for (int c = 0; c < colunas - 2; c++)
+            {
+                var d = inicio.AddDays(7 * c);
+                if (c == 0 || d.Month != d.AddDays(-7).Month)
+                {
+                    var t = Ui.T(d.ToString("MMM", pt).Replace(".", ""), 9.5, C.Tx3);
+                    Canvas.SetLeft(t, c * 13);
+                    meses.Children.Add(t);
+                }
+            }
+            raiz.Children.Add(meses);
+
+            var grade = new StackPanel { Orientation = Orientation.Horizontal };
+            for (int c = 0; c < colunas; c++)
+            {
+                var col = new StackPanel();
+                for (int l = 0; l < 7; l++)
+                {
+                    var d = inicio.AddDays(c * 7 + l);
+                    var v = de(d);
+                    long tk = v == null ? 0 : v[0];
+                    int n = tk <= 0 ? 0 : (q.Count == 0 ? 4 : 1 + q.Count(x => tk > x));
+                    var b = Quadrado(d > hoje ? Brushes.Transparent : CorNivel(n), d == hoje);
+                    if (d <= hoje) b.ToolTip = d.ToString("ddd, d MMM", pt) + " · " + (v == null ? "sem uso" : FmtTokens(v[0]) + " tokens · " + v[1] + " respostas");
+                    col.Children.Add(b);
+                }
+                grade.Children.Add(col);
+            }
+            raiz.Children.Add(grade);
+
+            var leg = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 3, 0, 0) };
+            var menos = Ui.T("menos", 9.5, C.Tx3); menos.Margin = new Thickness(0, 0, 6, 0); leg.Children.Add(menos);
+            for (int n = 0; n < 5; n++) { var b = Quadrado(CorNivel(n), false); b.Margin = new Thickness(0, 0, 3, 0); leg.Children.Add(b); }
+            var mais = Ui.T("mais", 9.5, C.Tx3); mais.Margin = new Thickness(3, 0, 0, 0); leg.Children.Add(mais);
+            raiz.Children.Add(leg);
+            return raiz;
+        }
+
         FrameworkElement Completo()
         {
             var p = new StackPanel { Margin = new Thickness(22, 14, 22, 16) };
@@ -727,6 +837,14 @@ namespace ClaudeAlertaWin
                 uso.Children.Add(t);
             }
             p.Children.Add(Ui.Cartao(uso));
+            if (ctl.Atividade.Count > 0)
+            {
+                var g = GridUso(ctl.Atividade);
+                g.Margin = new Thickness(16, 14, 16, 14);
+                var cg = Ui.Cartao(g);
+                cg.Margin = new Thickness(0, 10, 0, 0);
+                p.Children.Add(cg);
+            }
 
             if (ctl.Pendencias.Count > 0)
             {
@@ -909,6 +1027,8 @@ namespace ClaudeAlertaWin
         public List<Pendencia> Pendencias = new List<Pendencia>();
         public List<Sessao> Sessoes = new List<Sessao>();
         public Uso Uso;
+        public Dictionary<string, long[]> Atividade = new Dictionary<string, long[]>();
+        DateTime ultimoPedidoAtividade = DateTime.MinValue;
         public bool SoIcone;
         Bloco bloco;
         Painel painel;
@@ -945,6 +1065,13 @@ namespace ClaudeAlertaWin
             // sem hook rodando ninguém relia o uso e o número congelava: o app pede leitura nova se a última tem > 3 min
             Repetir(5, delegate {
                 Uso = Dados.LerUso();
+                Atividade = Dados.LerAtividade();
+                if ((DateTime.UtcNow - ultimoPedidoAtividade).TotalSeconds >= 300)
+                {
+                    ultimoPedidoAtividade = DateTime.UtcNow;
+                    try { Process.Start(new ProcessStartInfo(IOPath.Combine(Dados.Pasta, "bin", "alerta.exe"), "atividade") { UseShellExecute = false, CreateNoWindow = true }); }
+                    catch { }
+                }
                 var idade = Uso == null ? double.MaxValue : (DateTime.Now - Uso.Lido).TotalSeconds;
                 if (idade > 180 && (DateTime.UtcNow - ultimoPedidoUso).TotalSeconds > 120) { ultimoPedidoUso = DateTime.UtcNow; AtualizarUsoAgora(); }
                 Redesenhar();

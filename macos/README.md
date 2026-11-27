@@ -10,6 +10,14 @@ Clicando no bloco, o painel completo desce dele:
 
 ![Painel aberto](docs/exemplo.png)
 
+O cartão **Tokens** mostra o uso por dia. O botão 2D / 3D no canto troca a visão. No 2D, passe o mouse num dia para ver o balão e clique para fixar:
+
+![Grid de tokens em 2D](docs/grid-2d.png)
+
+No 3D, cada dia é uma barra. Arraste para girar e inclinar, use a pinça no trackpad para o zoom e ↺ para voltar ao ângulo inicial:
+
+![Grid de tokens em 3D](docs/grid-3d.png)
+
 Quando chega um pedido e você está em outro app, o cartão desce sozinho:
 
 ![Aviso de pedido](docs/aviso.png)

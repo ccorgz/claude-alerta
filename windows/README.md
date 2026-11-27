@@ -10,6 +10,12 @@ Clicando no bloco, o painel completo sobe dele:
 
 ![Painel aberto](docs/painel.png)
 
+O cartão **Tokens** mostra o uso por dia, em 2D ou 3D. No 3D, arraste para girar e inclinar, use a roda do mouse para o zoom e ↺ para voltar. As capturas abaixo são do Mac; no Windows o desenho é o mesmo:
+
+![Grid de tokens em 2D](../macos/docs/grid-2d.png)
+
+![Grid de tokens em 3D](../macos/docs/grid-3d.png)
+
 Quando chega um pedido, o cartão aparece sozinho no canto:
 
 ![Aviso de pedido](docs/aviso.png)

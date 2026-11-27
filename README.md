@@ -49,6 +49,21 @@
   </tr>
 </table>
 
+### Uso por dia: grid de tokens em 2D e 3D
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="macos/docs/grid-2d.png" alt="Grid de tokens por dia em 2D, com o balão de um dia fixado"><br>
+      <sub><b>2D</b>: um quadrado por dia, como o grid do GitHub. Passe o mouse para ver os tokens, as respostas e a comparação com a média; o clique fixa o dia.</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="macos/docs/grid-3d.png" alt="Grid de tokens por dia em 3D, com barras por dia"><br>
+      <sub><b>3D</b>: cada dia vira uma barra com altura pelos tokens. Arraste para girar e inclinar; use pinça no trackpad ou roda do mouse para o zoom e ↺ para voltar.</sub>
+    </td>
+  </tr>
+</table>
+
 ### Windows: na barra de tarefas
 
 <p align="center">

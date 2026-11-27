@@ -778,6 +778,211 @@ namespace ClaudeAlertaWin
                 Padding = new Thickness(10, 8, 10, 8), HasDropShadow = true };
         }
 
+        // Modo 3D do grid: cada dia vira uma barra; a altura é a raiz dos tokens do dia sobre o maior dia.
+        // Arrastar gira (para os lados) e inclina (para cima/baixo); a roda do mouse dá zoom.
+        static readonly string ArqModo3D = IOPath.Combine(Dados.Pasta, "grid3d");
+        bool modo3D = File.Exists(ArqModo3D);
+        bool animar3D;
+        const double GIRO0 = -0.32, INCLINA0 = 0.6, ALTO3 = 6.5, LADO3 = 0.8, LARG3 = 504, ALT3 = 236;
+        double giro = GIRO0, inclina = INCLINA0, zoom3 = 1;
+        bool CamPadrao { get { return giro == GIRO0 && inclina == INCLINA0 && zoom3 == 1; } }
+
+        // cor sólida da argila sobre o fundo do cartão, clareada ou escurecida por `luz`
+        static Brush Solida(int n, double luz)
+        {
+            var a = new[] { 0, 0.35, 0.55, 0.78, 1.0 }[n];
+            double r = n == 0 ? 0x33 : 31 + (217 - 31) * a, g = n == 0 ? 0x31 : 30 + (119 - 30) * a, b = n == 0 ? 0x2C : 27 + (87 - 27) * a;
+            Func<double, byte> f = x => (byte)Math.Max(0, Math.Min(255, x * luz));
+            var br = new SolidColorBrush(Color.FromRgb(f(r), f(g), f(b)));
+            br.Freeze();
+            return br;
+        }
+
+        // fecho convexo (contorno da barra na tela)
+        static PointCollection Casco(List<Point> pts)
+        {
+            pts = pts.OrderBy(q => q.X).ThenBy(q => q.Y).ToList();
+            Func<Point, Point, Point, double> cruz = (o, a, b) => (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
+            var baixo = new List<Point>(); var cima = new List<Point>();
+            foreach (var q in pts) { while (baixo.Count >= 2 && cruz(baixo[baixo.Count - 2], baixo[baixo.Count - 1], q) <= 0) baixo.RemoveAt(baixo.Count - 1); baixo.Add(q); }
+            for (int i = pts.Count - 1; i >= 0; i--) { var q = pts[i]; while (cima.Count >= 2 && cruz(cima[cima.Count - 2], cima[cima.Count - 1], q) <= 0) cima.RemoveAt(cima.Count - 1); cima.Add(q); }
+            baixo.RemoveAt(baixo.Count - 1); cima.RemoveAt(cima.Count - 1);
+            return new PointCollection(baixo.Concat(cima));
+        }
+
+        FrameworkElement SeletorModo()
+        {
+            var caixa = new StackPanel { Orientation = Orientation.Horizontal };
+            foreach (var m in new[] { false, true })
+            {
+                var modo = m;
+                var t = Ui.T(m ? "3D" : "2D", 10.5, modo3D == m ? C.Tx : C.Tx3, true);
+                t.HorizontalAlignment = HorizontalAlignment.Center; t.VerticalAlignment = VerticalAlignment.Center;
+                var b = new Border { Width = 28, Height = 18, CornerRadius = new CornerRadius(5), Child = t, Cursor = Cursors.Hand,
+                    Background = modo3D == m ? (Brush)C.Cartao2 : Brushes.Transparent };
+                b.MouseLeftButtonUp += delegate
+                {
+                    if (modo3D == modo) return;
+                    modo3D = modo; animar3D = modo;
+                    try { if (modo) File.WriteAllText(ArqModo3D, "1"); else File.Delete(ArqModo3D); } catch { }
+                    Desenhar();
+                };
+                caixa.Children.Add(b);
+            }
+            var sel = new Border { Child = caixa, Padding = new Thickness(2), CornerRadius = new CornerRadius(7), Background = C.Fundo,
+                BorderBrush = C.Linha, BorderThickness = new Thickness(1), ToolTip = "Ver o grid em 2D ou em 3D" };
+            var fila = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top };
+            if (modo3D && !CamPadrao)
+            {
+                var volta = Ui.T("↺", 13, C.Tx2, true);
+                volta.Cursor = Cursors.Hand; volta.Margin = new Thickness(0, 0, 8, 0); volta.VerticalAlignment = VerticalAlignment.Center;
+                volta.ToolTip = "Voltar ao ângulo inicial";
+                volta.MouseLeftButtonUp += delegate { giro = GIRO0; inclina = INCLINA0; zoom3 = 1; Desenhar(); };
+                fila.Children.Add(volta);
+            }
+            fila.Children.Add(sel);
+            return fila;
+        }
+
+        FrameworkElement Vista3D(int colunas, DateTime inicio, DateTime hoje, List<long> q, Func<DateTime, long[]> de, long media)
+        {
+            var pt = CultureInfo.GetCultureInfo("pt-BR");
+            long maior = 0;
+            for (int k = 0; k < colunas * 7; k++) { var v = de(inicio.AddDays(k)); if (v != null && v[0] > maior) maior = v[0]; }
+            Func<long, double> altura = t => t <= 0 || maior <= 0 ? 0.08 : 0.25 + (ALTO3 - 0.25) * Math.Sqrt((double)t / maior);
+            var tela = new Canvas { Width = LARG3, Height = ALT3, HorizontalAlignment = HorizontalAlignment.Center, ClipToBounds = true,
+                Background = Brushes.Transparent, Cursor = Cursors.SizeAll };
+            var branco = new SolidColorBrush(Color.FromArgb(242, 255, 255, 255));
+
+            Action redesenhar = () =>
+            {
+                tela.Children.Clear();
+                double cg = Math.Cos(giro), sg = Math.Sin(giro), si = Math.Sin(inclina), ci = Math.Cos(inclina);
+                Func<double, double, double[]> gira = (u, v) => { double x = u - colunas / 2.0, y = v - 3.5; return new[] { x * cg - y * sg, x * sg + y * cg }; };
+                Func<double, double, double, Point> cru = (u, v, z) => { var r = gira(u, v); return new Point(r[0], r[1] * si - z * ci); };
+                // encaixa chão + altura na área
+                double x0 = double.MaxValue, x1 = double.MinValue, y0 = double.MaxValue, y1 = double.MinValue;
+                foreach (var uv in new[] { new[] { 0.0, 0 }, new[] { (double)colunas, 0 }, new[] { 0.0, 7 }, new[] { (double)colunas, 7 } })
+                    foreach (var z in new[] { 0, ALTO3 * 0.8 })
+                    { var c0 = cru(uv[0], uv[1], z); x0 = Math.Min(x0, c0.X); x1 = Math.Max(x1, c0.X); y0 = Math.Min(y0, c0.Y); y1 = Math.Max(y1, c0.Y); }
+                double s = Math.Min((LARG3 - 8) / Math.Max(1e-6, x1 - x0), (ALT3 - 20) / Math.Max(1e-6, y1 - y0)) * zoom3;
+                double ox = LARG3 / 2 - (x0 + x1) / 2 * s, oy = (ALT3 - 12) / 2 - (y0 + y1) / 2 * s;
+                Func<double, double, double, Point> P = (u, v, z) => { var c0 = cru(u, v, z); return new Point(ox + c0.X * s, oy + c0.Y * s); };
+
+                tela.Children.Add(new System.Windows.Shapes.Polygon { Fill = new SolidColorBrush(Color.FromArgb(6, 255, 255, 255)),
+                    Points = new PointCollection { P(-0.3, -0.3, 0), P(colunas + 0.1, -0.3, 0), P(colunas + 0.1, 7.1, 0), P(-0.3, 7.1, 0) } });
+                for (int c = 0; c < colunas - 2; c++)
+                {
+                    var d = inicio.AddDays(7 * c);
+                    if (c == 0 || d.Month != d.AddDays(-7).Month)
+                    {
+                        var t = Ui.T(d.ToString("MMM", pt).Replace(".", ""), 9.5, C.Tx3);
+                        var p = P(c, 7.9, 0);
+                        t.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                        Canvas.SetLeft(t, p.X - t.DesiredSize.Width / 2); Canvas.SetTop(t, p.Y - t.DesiredSize.Height / 2);
+                        tela.Children.Add(t);
+                    }
+                }
+                // faces laterais visíveis: canto inicial e luz
+                var normais = new[] { new[] { 0.0, -1 }, new[] { 1.0, 0 }, new[] { 0.0, 1 }, new[] { -1.0, 0 } };
+                var lados = new List<Tuple<int, double>>();
+                for (int i = 0; i < 4; i++)
+                {
+                    double nx = normais[i][0] * cg - normais[i][1] * sg, ny = normais[i][0] * sg + normais[i][1] * cg;
+                    if (ny > 0.001) lados.Add(Tuple.Create(i, 0.62 + 0.12 * ny - 0.16 * nx));
+                }
+                var ordem = Enumerable.Range(0, colunas * 7).OrderBy(k => gira(k / 7 + 0.4, k % 7 + 0.4)[1]).ToList();
+                foreach (var k in ordem)
+                {
+                    int c = k / 7, l = k % 7;
+                    var d = inicio.AddDays(k);
+                    if (d > hoje) continue;
+                    var v = de(d);
+                    long tk = v == null ? 0 : v[0];
+                    int n = tk <= 0 ? 0 : (q.Count == 0 ? 4 : 1 + q.Count(x => tk > x));
+                    double z = altura(tk);
+                    double u0 = c, v0 = l, u1 = u0 + LADO3, v1 = v0 + LADO3;
+                    var cantos = new[] { new[] { u0, v0 }, new[] { u1, v0 }, new[] { u1, v1 }, new[] { u0, v1 } };
+                    var faces = new List<Tuple<System.Windows.Shapes.Polygon, double>>();
+                    foreach (var ld in lados)
+                    {
+                        var a = cantos[ld.Item1]; var b = cantos[(ld.Item1 + 1) % 4];
+                        faces.Add(Tuple.Create(new System.Windows.Shapes.Polygon { Points = new PointCollection { P(a[0], a[1], 0), P(b[0], b[1], 0), P(b[0], b[1], z), P(a[0], a[1], z) } }, ld.Item2));
+                    }
+                    var cima = new System.Windows.Shapes.Polygon { Points = new PointCollection(cantos.Select(cc => P(cc[0], cc[1], z))) };
+                    var pts = new List<Point>();
+                    foreach (var cc in cantos) { pts.Add(P(cc[0], cc[1], 0)); pts.Add(P(cc[0], cc[1], z)); }
+                    var borda = new System.Windows.Shapes.Polygon { Points = Casco(pts), StrokeThickness = 1.3, IsHitTestVisible = false };
+                    bool fixo = d == diaFixo;
+                    var ehHoje = d == hoje;
+                    Action<bool> pintar = acesa =>
+                    {
+                        double luz = acesa ? 1.25 : 1;
+                        foreach (var f in faces) f.Item1.Fill = Solida(n, f.Item2 * luz);
+                        cima.Fill = Solida(n, Math.Min(1.2, 1.08 * luz));
+                        borda.Stroke = acesa ? branco : null;
+                        cima.Stroke = acesa ? new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)) : (ehHoje ? new SolidColorBrush(Color.FromArgb(140, 255, 255, 255)) : null);
+                        cima.StrokeThickness = acesa ? 0.8 : 1;
+                    };
+                    pintar(fixo);
+                    var barra = new Canvas { Cursor = Cursors.Hand, Tag = d };
+                    foreach (var f in faces) barra.Children.Add(f.Item1);
+                    barra.Children.Add(cima); barra.Children.Add(borda);
+                    barra.ToolTip = Balao(CartaoDia(d, v, media));
+                    ToolTipService.SetInitialShowDelay(barra, 0);
+                    ToolTipService.SetPlacement(barra, System.Windows.Controls.Primitives.PlacementMode.Top);
+                    barra.MouseEnter += delegate { if (Mouse.LeftButton != MouseButtonState.Pressed) pintar(true); };
+                    barra.MouseLeave += delegate { pintar(fixo); };
+                    if (animar3D)
+                    {
+                        // as barras sobem a partir do chão, com um leve atraso da esquerda para a direita
+                        var b0 = P(u0 + 0.4, v0 + 0.4, 0);
+                        var esc = new ScaleTransform(1, 0, b0.X, b0.Y);
+                        barra.RenderTransform = esc;
+                        var anim = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(650)) { BeginTime = TimeSpan.FromMilliseconds(c * 6),
+                            EasingFunction = new BackEase { Amplitude = 0.35, EasingMode = EasingMode.EaseOut } };
+                        esc.BeginAnimation(ScaleTransform.ScaleYProperty, anim);
+                    }
+                    tela.Children.Add(barra);
+                }
+                animar3D = false;
+            };
+            redesenhar();
+
+            // arrastar gira/inclina; clique sem arrastar fixa o dia; roda do mouse dá zoom
+            Point? inicioArrasto = null; double giroIni = 0, inclinaIni = 0; bool girando = false;
+            tela.MouseLeftButtonDown += (o, e) => { inicioArrasto = e.GetPosition(tela); giroIni = giro; inclinaIni = inclina; girando = false; };
+            tela.MouseMove += (o, e) =>
+            {
+                if (inicioArrasto == null || e.LeftButton != MouseButtonState.Pressed) return;
+                var dl = e.GetPosition(tela) - inicioArrasto.Value;
+                if (!girando && dl.Length < 3) return;
+                if (!girando) { girando = true; tela.CaptureMouse(); }
+                giro = giroIni + dl.X * 0.011;
+                inclina = Math.Min(Math.PI / 2, Math.Max(0.12, inclinaIni + dl.Y * 0.008));
+                redesenhar();
+            };
+            tela.MouseLeftButtonUp += (o, e) =>
+            {
+                var foiGiro = girando;
+                inicioArrasto = null; girando = false;
+                if (tela.IsMouseCaptured) tela.ReleaseMouseCapture();
+                if (foiGiro) { Desenhar(); return; }
+                var hit = VisualTreeHelper.HitTest(tela, e.GetPosition(tela));
+                DependencyObject no = hit == null ? null : hit.VisualHit;
+                while (no != null && no != tela && !(no is Canvas && ((Canvas)no).Tag is DateTime)) no = VisualTreeHelper.GetParent(no);
+                var bc = no as Canvas;
+                if (bc != null && bc != tela) { var dia = (DateTime)bc.Tag; diaFixo = diaFixo == dia ? (DateTime?)null : dia; Desenhar(); }
+            };
+            tela.MouseWheel += (o, e) =>
+            {
+                zoom3 = Math.Min(3, Math.Max(0.6, zoom3 * Math.Pow(1.12, e.Delta / 120.0)));
+                redesenhar();
+                e.Handled = true;
+            };
+            return tela;
+        }
+
         FrameworkElement GridUso(Dictionary<string, long[]> dias)
         {
             const int colunas = 39;
@@ -791,7 +996,12 @@ namespace ClaudeAlertaWin
 
             var raiz = new StackPanel();
             Func<int, long> soma = n => Enumerable.Range(0, n).Select(k => de(hoje.AddDays(-k))).Where(v => v != null).Sum(v => v[0]);
-            raiz.Children.Add(Ui.T("Tokens", 13, C.Tx));
+            var topo = new DockPanel();
+            var seletor = SeletorModo();
+            DockPanel.SetDock(seletor, Dock.Right);
+            topo.Children.Add(seletor);
+            topo.Children.Add(Ui.T("Tokens", 13, C.Tx));
+            raiz.Children.Add(topo);
             var nums = new Grid { Margin = new Thickness(0, 6, 0, 12) };
             var itens = new[] { Tuple.Create(soma(1), "hoje"), Tuple.Create(soma(7), "7 dias"), Tuple.Create(soma(30), "30 dias"), Tuple.Create(dias.Values.Sum(v => v[0]), "total") };
             for (int k = 0; k < itens.Length; k++)
@@ -809,6 +1019,8 @@ namespace ClaudeAlertaWin
             }
             raiz.Children.Add(nums);
 
+            if (modo3D) raiz.Children.Add(Vista3D(colunas, inicio, hoje, q, de, media));
+            else {
             var meses = new Canvas { Height = 14 };
             for (int c = 0; c < colunas - 2; c++)
             {
@@ -850,6 +1062,7 @@ namespace ClaudeAlertaWin
                 grade.Children.Add(col);
             }
             raiz.Children.Add(grade);
+            }
 
             var rodape = new DockPanel { Margin = new Thickness(0, 3, 0, 0) };
             var leg = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top };
@@ -858,7 +1071,7 @@ namespace ClaudeAlertaWin
             for (int n = 0; n < 5; n++) { var b = Quadrado(CorNivel(n), false); b.Margin = new Thickness(0, 0, 3, 0); leg.Children.Add(b); }
             var mais = Ui.T("mais", 9.5, C.Tx3); mais.Margin = new Thickness(3, 0, 0, 0); leg.Children.Add(mais);
             rodape.Children.Add(leg);
-            rodape.Children.Add(Ui.T(diaFixo == null ? "passe o mouse num dia · clique para fixar" : "clique de novo no dia para soltar", 9.5, C.Tx3));
+            rodape.Children.Add(Ui.T(diaFixo == null ? (modo3D ? "arraste para girar · roda do mouse dá zoom · clique fixa o dia" : "passe o mouse num dia · clique para fixar") : "clique de novo no dia para soltar", 9.5, C.Tx3));
             raiz.Children.Add(rodape);
             if (diaFixo != null)
             {

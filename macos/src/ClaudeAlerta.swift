@@ -620,6 +620,11 @@ func fmtTokens(_ n: Int) -> String {
 struct GridUso: View {
     let dias: [String: (tokens: Int, respostas: Int)]
     @State private var foco: Date? = nil      // dia sob o mouse
+    @AppStorage("grid3d") private var tres = ProcessInfo.processInfo.environment["ALERTA_PNG_3D"] != nil   // modo 3D (lembrado entre aberturas)
+    @State private var cresce: Double = 1     // 0→1 ao entrar no 3D: as barras sobem
+    @State private var cam = Cam3D.daCaptura()   // ângulo e zoom do 3D (arrastar gira, pinça dá zoom)
+    @State private var arrasto: Cam3D? = nil  // câmera no início do arrasto
+    @State private var zoomBase = 1.0
     @State private var fixo: Date? = ProcessInfo.processInfo.environment["ALERTA_PNG_DIA"].flatMap { GridUso.chave.date(from: $0) }   // dia clicado: o balão fica até clicar de novo (ALERTA_PNG_DIA só para a captura)
     static let longo: DateFormatter = { let f = DateFormatter(); f.locale = Locale(identifier: "pt_BR"); f.dateFormat = "EEEE, d 'de' MMMM"; return f }()
     let colunas = 39
@@ -646,19 +651,27 @@ struct GridUso: View {
     var body: some View {
         let ini = inicio, h = hoje, q = quartis
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Tokens").font(.system(size: 13)).foregroundColor(C.tx)
+            HStack {
+                Text("Tokens").font(.system(size: 13)).foregroundColor(C.tx)
+                Spacer()
+                seletorModo
+            }
             HStack(spacing: 0) {
                 numero(somaDias(1, h), "hoje")
                 numero(somaDias(7, h), "7 dias")
                 numero(somaDias(30, h), "30 dias")
                 numero(dias.values.reduce(0) { $0 + $1.tokens }, "total", destaque: true)
             }.padding(.top, 4).padding(.bottom, 12)
-            meses(ini)
-            ZStack(alignment: .topLeading) {
-                HStack(spacing: GridUso.vao) {
-                    ForEach(0..<colunas, id: \.self) { c in coluna(ini, c, h, q) }
+            if tres {
+                vista3D(ini, h, q)
+            } else {
+                meses(ini)
+                ZStack(alignment: .topLeading) {
+                    HStack(spacing: GridUso.vao) {
+                        ForEach(0..<colunas, id: \.self) { c in coluna(ini, c, h, q) }
+                    }
+                    if let d = foco ?? fixo { balao(d, ini).zIndex(1) }
                 }
-                if let d = foco ?? fixo { balao(d, ini).zIndex(1) }
             }
             legenda.padding(.top, 2)
         }
@@ -722,14 +735,18 @@ struct GridUso: View {
     }
     // balão do dia: data, tokens, respostas e comparação com a média dos dias com uso
     func balao(_ d: Date, _ ini: Date) -> some View {
-        let v = dias[GridUso.chave.string(from: d)]
-        let usados = dias.values.filter { $0.tokens > 0 }
-        let media = usados.isEmpty ? 0 : usados.reduce(0) { $0 + $1.tokens } / usados.count
         let k = cal.dateComponents([.day], from: ini, to: d).day ?? 0
         let c = k / 7, l = k % 7
         let passo = GridUso.lado + GridUso.vao, largura: CGFloat = 210
         let x = min(max(0, CGFloat(c) * passo + GridUso.lado / 2 - largura / 2), CGFloat(colunas) * passo - GridUso.vao - largura)
         let y = l >= 3 ? CGFloat(l) * passo - 70 : CGFloat(l + 1) * passo + 4
+        return cartaoDia(d, x, y)
+    }
+    func cartaoDia(_ d: Date, _ x: CGFloat, _ y: CGFloat) -> some View {
+        let v = dias[GridUso.chave.string(from: d)]
+        let usados = dias.values.filter { $0.tokens > 0 }
+        let media = usados.isEmpty ? 0 : usados.reduce(0) { $0 + $1.tokens } / usados.count
+        let largura: CGFloat = 210
         var comp = ""
         if let t = v?.tokens, t > 0, media > 0 {
             let r = Double(t) / Double(media)
@@ -758,9 +775,104 @@ struct GridUso: View {
         .allowsHitTesting(false)
     }
 
+    // MARK: modo 3D: cada dia vira uma barra; a altura é a raiz dos tokens do dia sobre o maior dia.
+    // Arrastar gira (para os lados) e inclina (para cima/baixo); pinça no trackpad dá zoom.
+    static let larg3D: CGFloat = 504, alt3D: CGFloat = 236
+    var maiorDia: Int { dias.values.map { $0.tokens }.max() ?? 0 }
+    func altura3D(_ t: Int, _ maior: Int, _ p: Double) -> Double {
+        t <= 0 || maior <= 0 ? 0.08 : (0.25 + (Geo3D.altoMax - 0.25) * sqrt(Double(t) / Double(maior))) * max(0.02, p)
+    }
+    var geo: Geo3D { Geo3D(cam: cam, colunas: colunas, W: GridUso.larg3D, H: GridUso.alt3D) }
+
+    var seletorModo: some View {
+        HStack(spacing: 6) {
+            if tres && cam != Cam3D() {
+                Image(systemName: "arrow.counterclockwise").font(.system(size: 10.5, weight: .semibold)).foregroundColor(C.tx2)
+                    .frame(width: 22, height: 22).contentShape(Rectangle())
+                    .onTapGesture { withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { cam = Cam3D() }; zoomBase = 1 }
+                    .help("Voltar ao ângulo inicial")
+            }
+            HStack(spacing: 0) {
+                ForEach([false, true], id: \.self) { m in
+                    Text(m ? "3D" : "2D").font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(tres == m ? C.tx : C.tx3)
+                        .frame(width: 28, height: 18)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(tres == m ? C.cartao2 : Color.clear))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if tres == m { return }
+                            foco = nil
+                            tres = m
+                            if m { cresce = 0; withAnimation(.spring(response: 0.7, dampingFraction: 0.72)) { cresce = 1 } }
+                        }
+                }
+            }
+            .padding(2)
+            .background(RoundedRectangle(cornerRadius: 7).fill(C.fundo))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(C.linha, lineWidth: 1))
+            .help("Ver o grid em 2D ou em 3D")
+        }
+    }
+
+    func diaNoPonto(_ pt: CGPoint, _ ini: Date, _ h: Date, _ maior: Int) -> Date? {
+        let g = geo
+        for k in g.ordem().reversed() {
+            let d = data(ini, k / 7, k % 7)
+            if d > h { continue }
+            if g.contorno(k / 7, k % 7, altura3D(tokens(d), maior, 1)).contains(pt) { return d }
+        }
+        return nil
+    }
+
+    func vista3D(_ ini: Date, _ h: Date, _ q: [Int]) -> some View {
+        let maior = maiorDia
+        return ZStack(alignment: .topLeading) {
+            Cidade3D(dias: dias, ini: ini, hoje: h, quartis: q, colunas: colunas, maior: maior, foco: foco, fixo: fixo, cam: cam, p: cresce)
+                .frame(width: GridUso.larg3D, height: GridUso.alt3D)
+                .clipped()
+                .contentShape(Rectangle())
+                .onContinuousHover { fase in
+                    if arrasto != nil { return }
+                    switch fase {
+                    case .active(let pt):
+                        let d = diaNoPonto(pt, ini, h, maior)
+                        if d != foco { foco = d }
+                        if d != nil { NSCursor.pointingHand.set() } else { NSCursor.openHand.set() }
+                    case .ended: foco = nil; NSCursor.arrow.set()
+                    }
+                }
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { g in
+                        if arrasto == nil && hypot(g.translation.width, g.translation.height) < 3 { return }
+                        if arrasto == nil { arrasto = cam; foco = nil }
+                        cam.giro = arrasto!.giro + Double(g.translation.width) * 0.011
+                        cam.inclina = min(Double.pi / 2, max(0.12, arrasto!.inclina + Double(g.translation.height) * 0.008))
+                        NSCursor.closedHand.set()
+                    }
+                    .onEnded { g in
+                        if arrasto == nil, let d = diaNoPonto(g.location, ini, h, maior) { fixo = (fixo == d ? nil : d) }
+                        if arrasto != nil { arrasto = nil; NSCursor.openHand.set() }
+                    })
+                .simultaneousGesture(MagnifyGesture()
+                    .onChanged { v in cam.zoom = min(3, max(0.6, zoomBase * Double(v.magnification))) }
+                    .onEnded { _ in zoomBase = cam.zoom })
+            if arrasto == nil, let d = foco ?? fixo { balao3D(d, ini, maior).zIndex(1) }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+    func balao3D(_ d: Date, _ ini: Date, _ maior: Int) -> some View {
+        let k = cal.dateComponents([.day], from: ini, to: d).day ?? 0
+        let c = k / 7, l = k % 7, g = geo
+        let z = altura3D(tokens(d), maior, 1)
+        let topo = g.p(Double(c) + 0.4, Double(l) + 0.4, z)
+        let base = g.p(Double(c) + 0.4, Double(l) + 0.4, 0)
+        let x = min(max(0, topo.x - 105), GridUso.larg3D - 210)
+        let y = topo.y > 80 ? topo.y - 78 : max(topo.y, base.y) + 10
+        return cartaoDia(d, x, y)
+    }
     var legenda: some View {
         HStack(spacing: GridUso.vao) {
-            Text(fixo == nil ? "passe o mouse num dia · clique para fixar" : "clique de novo no dia para soltar")
+            Text(fixo == nil ? (tres ? "arraste para girar · pinça para zoom · clique fixa o dia" : "passe o mouse num dia · clique para fixar") : "clique de novo no dia para soltar")
                 .font(.system(size: 9.5)).foregroundColor(C.tx3)
             Spacer()
             Text("menos").font(.system(size: 9.5)).foregroundColor(C.tx3).padding(.trailing, 3)
@@ -768,6 +880,137 @@ struct GridUso: View {
                 RoundedRectangle(cornerRadius: 2.5).fill(GridUso.cor(n)).frame(width: GridUso.lado, height: GridUso.lado)
             }
             Text("mais").font(.system(size: 9.5)).foregroundColor(C.tx3).padding(.leading, 3)
+        }
+    }
+}
+
+// Câmera do modo 3D: giro em volta do eixo vertical, inclinação (0 = de lado, π/2 = de cima) e zoom.
+struct Cam3D: Equatable {
+    var giro = -0.32, inclina = 0.6, zoom = 1.0
+    // ALERTA_PNG_CAM="giro,inclina,zoom" só para conferir a captura em outros ângulos
+    static func daCaptura() -> Cam3D {
+        guard let v = ProcessInfo.processInfo.environment["ALERTA_PNG_CAM"]?.split(separator: ",").compactMap({ Double($0) }), v.count == 3 else { return Cam3D() }
+        return Cam3D(giro: v[0], inclina: v[1], zoom: v[2])
+    }
+}
+
+// Projeção ortográfica do grid com a câmera, encaixada na área W×H.
+struct Geo3D {
+    static let altoMax = 6.5, lado = 0.8
+    let cam: Cam3D, colunas: Int
+    var s: CGFloat = 1, ox: CGFloat = 0, oy: CGFloat = 0
+    init(cam: Cam3D, colunas: Int, W: CGFloat, H: CGFloat) {
+        self.cam = cam; self.colunas = colunas
+        var xs: [CGFloat] = [], ys: [CGFloat] = []
+        for (u, v) in [(0.0, 0.0), (Double(colunas), 0.0), (0.0, 7.0), (Double(colunas), 7.0)] {
+            for z in [0, Geo3D.altoMax * 0.8] { let q = cru(u, v, z); xs.append(q.x); ys.append(q.y) }
+        }
+        let bw = max(xs.max()! - xs.min()!, 1), bh = max(ys.max()! - ys.min()!, 1)
+        s = min((W - 8) / bw, (H - 20) / bh) * CGFloat(cam.zoom)
+        ox = W / 2 - (xs.max()! + xs.min()!) / 2 * s
+        oy = (H - 12) / 2 - (ys.max()! + ys.min()!) / 2 * s
+    }
+    func gira(_ u: Double, _ v: Double) -> (Double, Double) {
+        let x = u - Double(colunas) / 2, y = v - 3.5
+        return (x * cos(cam.giro) - y * sin(cam.giro), x * sin(cam.giro) + y * cos(cam.giro))
+    }
+    func cru(_ u: Double, _ v: Double, _ z: Double) -> CGPoint {
+        let (x, y) = gira(u, v)
+        return CGPoint(x: x, y: y * sin(cam.inclina) - z * cos(cam.inclina))
+    }
+    func p(_ u: Double, _ v: Double, _ z: Double) -> CGPoint {
+        let c = cru(u, v, z)
+        return CGPoint(x: ox + c.x * s, y: oy + c.y * s)
+    }
+    // de trás para frente: maior profundidade girada = mais perto de quem olha
+    func ordem() -> [Int] {
+        let prof = (0..<(colunas * 7)).map { gira(Double($0 / 7) + 0.4, Double($0 % 7) + 0.4).1 }
+        return (0..<(colunas * 7)).sorted { prof[$0] < prof[$1] }
+    }
+    func cantos(_ c: Int, _ l: Int) -> [(Double, Double)] {
+        let u0 = Double(c), v0 = Double(l), u1 = u0 + Geo3D.lado, v1 = v0 + Geo3D.lado
+        return [(u0, v0), (u1, v0), (u1, v1), (u0, v1)]
+    }
+    // contorno da barra na tela (fecho convexo dos 8 cantos), para o mouse
+    func contorno(_ c: Int, _ l: Int, _ z: Double) -> Path {
+        var pts: [CGPoint] = []
+        for (u, v) in cantos(c, l) { pts.append(p(u, v, 0)); pts.append(p(u, v, z)) }
+        pts.sort { ($0.x, $0.y) < ($1.x, $1.y) }
+        func cruz(_ o: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat { (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x) }
+        var baixo: [CGPoint] = [], cima: [CGPoint] = []
+        for q in pts { while baixo.count >= 2 && cruz(baixo[baixo.count - 2], baixo[baixo.count - 1], q) <= 0 { baixo.removeLast() }; baixo.append(q) }
+        for q in pts.reversed() { while cima.count >= 2 && cruz(cima[cima.count - 2], cima[cima.count - 1], q) <= 0 { cima.removeLast() }; cima.append(q) }
+        var r = Path(); r.addLines(Array(baixo.dropLast() + cima.dropLast())); r.closeSubpath()
+        return r
+    }
+    // faces laterais visíveis: (índice do canto inicial, luz)
+    func lados() -> [(Int, Double)] {
+        let normais: [(Double, Double)] = [(0, -1), (1, 0), (0, 1), (-1, 0)]   // faces 0-1, 1-2, 2-3, 3-0
+        return normais.enumerated().compactMap { i, n in
+            let nx = n.0 * cos(cam.giro) - n.1 * sin(cam.giro), ny = n.0 * sin(cam.giro) + n.1 * cos(cam.giro)
+            return ny > 0.001 ? (i, 0.62 + 0.12 * ny - 0.16 * nx) : nil
+        }
+    }
+}
+
+// Desenho do modo 3D: barras de trás para frente. `p` anima a subida das barras.
+struct Cidade3D: View, Animatable {
+    let dias: [String: (tokens: Int, respostas: Int)]
+    let ini: Date, hoje: Date, quartis: [Int], colunas: Int, maior: Int
+    let foco: Date?, fixo: Date?
+    let cam: Cam3D
+    var p: Double
+    var animatableData: Double { get { p } set { p = newValue } }
+
+    // cor sólida da argila sobre o fundo do cartão (sem transparência, para as faces não se misturarem)
+    static func solida(_ n: Int, _ luz: Double) -> Color {
+        let a = [0, 0.35, 0.55, 0.78, 1][n]
+        let base: (Double, Double, Double) = n == 0 ? (0x33, 0x31, 0x2C) : (31 + (217 - 31) * a, 30 + (119 - 30) * a, 27 + (87 - 27) * a)
+        return Color(.sRGB, red: min(1, base.0 * luz / 255), green: min(1, base.1 * luz / 255), blue: min(1, base.2 * luz / 255), opacity: 1)
+    }
+
+    var body: some View {
+        Canvas { ctx, tam in
+            let cal = Calendar.current
+            let g = Geo3D(cam: cam, colunas: colunas, W: tam.width, H: tam.height)
+            var chao = Path()
+            chao.addLines([g.p(-0.3, -0.3, 0), g.p(Double(colunas) + 0.1, -0.3, 0), g.p(Double(colunas) + 0.1, 7.1, 0), g.p(-0.3, 7.1, 0)])
+            chao.closeSubpath()
+            ctx.fill(chao, with: .color(Color.white.opacity(0.025)))
+            // meses ao longo da borda de sábado
+            for c in 0..<colunas {
+                let d = cal.date(byAdding: .day, value: c * 7, to: ini)!
+                let ant = cal.date(byAdding: .day, value: (c - 1) * 7, to: ini)!
+                if (c == 0 || cal.component(.month, from: d) != cal.component(.month, from: ant)) && c < colunas - 2 {
+                    ctx.draw(Text(GridUso.mes.string(from: d).replacingOccurrences(of: ".", with: "")).font(.system(size: 9.5)).foregroundColor(C.tx3),
+                             at: g.p(Double(c), 7.9, 0), anchor: .center)
+                }
+            }
+            let lados = g.lados()
+            for k in g.ordem() {
+                let c = k / 7, l = k % 7
+                let d = cal.date(byAdding: .day, value: k, to: ini)!
+                if d > hoje { continue }
+                let t = dias[GridUso.chave.string(from: d)]?.tokens ?? 0
+                let n = t <= 0 ? 0 : (quartis.isEmpty ? 4 : 1 + quartis.filter { t > $0 }.count)
+                let z = t <= 0 || maior <= 0 ? 0.08 : (0.25 + (Geo3D.altoMax - 0.25) * sqrt(Double(t) / Double(maior))) * max(0.02, p)
+                let ativo = d == foco || d == fixo
+                let brilho = ativo ? 1.25 : 1
+                let q = g.cantos(c, l)
+                for (i, luz) in lados {
+                    let a = q[i], b = q[(i + 1) % 4]
+                    var f = Path(); f.addLines([g.p(a.0, a.1, 0), g.p(b.0, b.1, 0), g.p(b.0, b.1, z), g.p(a.0, a.1, z)]); f.closeSubpath()
+                    ctx.fill(f, with: .color(Cidade3D.solida(n, luz * brilho)))
+                }
+                var topo = Path(); topo.addLines(q.map { g.p($0.0, $0.1, z) }); topo.closeSubpath()
+                ctx.fill(topo, with: .color(Cidade3D.solida(n, min(1.2, 1.08 * brilho))))
+                if ativo {
+                    ctx.stroke(g.contorno(c, l, z), with: .color(.white.opacity(0.95)), lineWidth: 1.3)
+                    ctx.stroke(topo, with: .color(.white.opacity(0.6)), lineWidth: 0.8)
+                } else if d == hoje {
+                    ctx.stroke(topo, with: .color(.white.opacity(0.55)), lineWidth: 1)
+                }
+            }
         }
     }
 }

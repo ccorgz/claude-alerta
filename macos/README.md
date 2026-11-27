@@ -89,7 +89,7 @@ Fora de uma sessão do Claude Code, esse comando só funciona se o `claude` esti
 | Pedidos de threads na nuvem | `~/.claude-alerta/tela.json`, escrito por `alerta-tela` (cartões "Allow Claude…" na janela do Claude) | a cada 3 s |
 | Sessões ativas | `~/.claude/sessions/*.json`, que o próprio Claude Code mantém (só conta processo vivo); título em `~/Library/Application Support/Claude/claude-code-sessions/` | a cada 3 s |
 | Uso 5h / semana | `~/.claude-alerta/uso.json`, escrito por `alerta uso` | o app relê a cada 5 s; os hooks renovam o arquivo no máximo a cada 2 min e, se nenhuma sessão local rodar, o próprio app pede leitura nova quando ela passa de 3 min |
-| Uso por dia (grid) | `~/.claude-alerta/atividade.json`, escrito por `alerta atividade` a partir do histórico local `~/.claude/projects` | o app pede a cada 5 min; só lê o que cresceu desde a última vez. Conta tokens de entrada, saída e cache criado (leitura de cache não entra), só das sessões locais. Passando o mouse num dia aparece a data, os tokens, as respostas e a comparação com a média; clicar fixa o dia |
+| Uso por dia (grid) | `~/.claude-alerta/atividade.json`, escrito por `alerta atividade` a partir do histórico local `~/.claude/projects` | o app pede a cada 5 min; só lê o que cresceu desde a última vez. Conta tokens de entrada, saída e cache criado (leitura de cache não entra), só das sessões locais. Passando o mouse num dia aparece a data, os tokens, as respostas e a comparação com a média; clicar fixa o dia. O botão 2D / 3D no canto troca o grid por barras 3D (altura pelos tokens do dia), e a escolha fica salva. No 3D, arrastar gira e inclina; a pinça no trackpad dá zoom; ↺ volta ao ângulo inicial |
 
 ### Como o uso é lido (e por que não pede senha)
 
